@@ -9,6 +9,11 @@ env:
   DEVICE_NAME : "oneplus_8"
   DEVICE_CODENAME : "instantnoodle"
 
+  # OnePlus Android build exports this (OplusKernelEnvConfig.mk). It selects the OnePlus SM8250
+  # project DT dirs (19821/19855/19811/19805/20809/20828 = OP8 series) and the OnePlus
+  # charger/haptic paths. Without it the OPPO project DTs (19066 ...) are built instead.
+  BRAND_SHOW_FLAG : "oneplus"
+
   CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-android-"
   # OOS 4.19.157 旧代码 + clang 19: 禁用新 clang 默认 -Werror 严格警告
   # KCFLAGS 值必须用引号包裹(含空格), 否则 make 只取第一个参数
@@ -196,6 +201,21 @@ jobs:
           rm -f defconfig_oos.patch
           echo "[+] OOS defconfig applied."
 
+      - name: 🩹 Enable DT overlay build (base dtb + per-project dtbo for the OP8 series)
+        run: |
+          # OnePlus keeps the OP8-series hardware description (project_id, camera, ...) only in
+          # <project>/kona-mtp-overlay.dts, which is built only with CONFIG_BUILD_ARM64_DT_OVERLAY=y.
+          F="$GITHUB_WORKSPACE/kernel/device_kernel/arch/arm64/configs/vendor/kona-perf_defconfig"
+          if grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' "$F"; then
+            echo "[+] CONFIG_BUILD_ARM64_DT_OVERLAY already enabled."
+          elif grep -q '^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set' "$F"; then
+            sed -i 's/^# CONFIG_BUILD_ARM64_DT_OVERLAY is not set/CONFIG_BUILD_ARM64_DT_OVERLAY=y/' "$F"
+          else
+            echo 'CONFIG_BUILD_ARM64_DT_OVERLAY=y' >> "$F"
+          fi
+          grep -q '^CONFIG_BUILD_ARM64_DT_OVERLAY=y' "$F" || { echo "[-] Could not enable DT overlay."; false; }
+          echo "[+] DT overlay build enabled."
+
       - name: 🩹 Export oplus_native_features.mk variables to the build environment
         run: |
           # oplus_native_features.mk is included by the top Makefile, but its plain
@@ -215,17 +235,35 @@ jobs:
       - name: 🚀 Build Process
         uses: ./.github/workflows/build-process
 
-      - name: 🖼️ Generate DTB (OOS concat kona dtb variants)
+      - name: 🖼️ Generate DTB + DTBO (OP8 series)
         run: |
           cd $GITHUB_WORKSPACE/kernel/device_kernel
-          DTB_DIR="out/arch/arm64/boot/dts/vendor/19821"
-          if [ -f "$DTB_DIR/kona-mtp.dtb" ]; then
-            cat "$DTB_DIR/kona-mtp.dtb" > out/arch/arm64/boot/dtb.img
-            echo "[+] Generated dtb.img from kona-mtp.dtb"
-          else
-            cat out/arch/arm64/boot/dts/vendor/*/*.dtb > out/arch/arm64/boot/dtb.img
-            echo "[+] Generated dtb.img (concat all vendor dtbs)"
-          fi
+          BOOT_DIR="out/arch/arm64/boot"
+          DTS_DIR="$BOOT_DIR/dts/vendor"
+          # OP8 series = every SM8250 (kona) OnePlus project dir in the official devicetree
+          PROJECTS="19805 19811 19821 19855 20809 20828"
+
+          for p in $PROJECTS; do
+            for f in kona.dtb kona-v2.dtb kona-v2.1.dtb kona-mtp-overlay.dtbo; do
+              if [ ! -f "$DTS_DIR/$p/$f" ]; then
+                echo "[-] $DTS_DIR/$p/$f missing (BRAND_SHOW_FLAG / DT overlay not effective?)."
+                false
+              fi
+            done
+          done
+
+          # dtb.img: same as OnePlus AndroidKernel.mk (cat vendor/*/*.dtb)
+          cat $DTS_DIR/*/*.dtb > $BOOT_DIR/dtb.img
+          echo "[+] Generated dtb.img from $(ls $DTS_DIR/*/*.dtb | wc -l) base dtbs."
+
+          # dtbo.img: one overlay per OP8-series project (qcom reference overlays are not included)
+          OVERLAYS=""
+          for p in $PROJECTS; do
+            OVERLAYS="$OVERLAYS $DTS_DIR/$p/kona-mtp-overlay.dtbo"
+          done
+          python3 /tmp/Bin/mkdtboimg.py create $BOOT_DIR/dtbo.img --page_size=4096 $OVERLAYS
+          python3 /tmp/Bin/mkdtboimg.py dump $BOOT_DIR/dtbo.img | grep -E "dt_entry_count|total_size"
+          echo "[+] Generated dtbo.img from $(echo $OVERLAYS | wc -w) overlays."
 
       - name: 🔩 Pack Process
         uses: ./.github/workflows/pack-process
