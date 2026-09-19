@@ -146,28 +146,6 @@ jobs:
             false
           fi
 
-      - name: 🩹 Fix disabled oplus_router_boost build (net/Makefile)
-        run: |
-          F="$GITHUB_WORKSPACE/kernel/device_kernel/net/Makefile"
-          if grep -q '^ifneq (\$(OPLUS_FEATURE_WIFI_ROUTERBOOST),)$' "$F"; then
-            sed -i 's/^ifneq (\$(OPLUS_FEATURE_WIFI_ROUTERBOOST),)$/OPLUS_FEATURE_WIFI_ROUTERBOOST=1\nifneq ($(OPLUS_FEATURE_WIFI_ROUTERBOOST),)/' "$F"
-            echo "[+] Added OPLUS_FEATURE_WIFI_ROUTERBOOST=1 to net/Makefile."
-          else
-            echo "[-] Expected ifneq line not found in net/Makefile — check if OnePlus changed it."
-            false
-          fi
-
-      - name: 🩹 Fix disabled oplus_adfr build (techpack/display/msm/Makefile)
-        run: |
-          F="$GITHUB_WORKSPACE/kernel/device_kernel/techpack/display/msm/Makefile"
-          if grep -q '^ifeq (\$(OPLUS_FEATURE_ADFR_KERNEL),yes)$' "$F"; then
-            sed -i 's/^ifeq (\$(OPLUS_FEATURE_ADFR_KERNEL),yes)$/OPLUS_FEATURE_ADFR_KERNEL=yes\nifeq ($(OPLUS_FEATURE_ADFR_KERNEL),yes)/' "$F"
-            echo "[+] Added OPLUS_FEATURE_ADFR_KERNEL=yes to techpack/display/msm/Makefile."
-          else
-            echo "[-] Expected ifeq line not found in techpack/display/msm/Makefile — check if OnePlus changed it."
-            false
-          fi
-
       - name: 📌 Kernel version suffix (OOS)
         run: |
           cd $GITHUB_WORKSPACE/kernel/device_kernel
