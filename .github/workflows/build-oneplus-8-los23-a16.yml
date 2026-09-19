@@ -213,17 +213,37 @@ jobs:
         run: |
           # techpack/display/Makefile has "#obj-$(CONFIG_DRM_OPLUS) += oplus/"
           # commented out, and CONFIG_DRM_OPLUS is never set in the defconfig.
-          # Callers (dsi_panel.c, msm_drv.c, sde_encoder.c, etc.) call
-          # oplus_adfr_* functions unconditionally, so oplus/ (containing
-          # oplus_adfr.c) never gets built and those symbols are undefined at
-          # link time. Uncomment and make unconditional, matching the
-          # asymmetry fix used for oplus_router_boost above.
+          # Uncomment and make unconditional (obj-y), since callers
+          # (dsi_panel.c, msm_drv.c, sde_encoder.c, etc.) call oplus_adfr_*
+          # functions unconditionally with no matching guard.
           F="$GITHUB_WORKSPACE/kernel/device_kernel/techpack/display/Makefile"
           if grep -q '^#obj-\$(CONFIG_DRM_OPLUS) += oplus/$' "$F"; then
             sed -i 's/^#obj-\$(CONFIG_DRM_OPLUS) += oplus\/$/obj-y += oplus\//' "$F"
             echo "[+] Enabled oplus/ build in techpack/display/Makefile."
           else
             echo "[-] Expected commented obj line not found — check if OnePlus changed it."
+            false
+          fi
+
+      - name: 🩹 Restore oplus/Makefile (needed for the fix above to actually build)
+        run: |
+          # obj-y += oplus/ tells Kbuild to recurse into oplus/ and use its
+          # own Makefile — but OnePlus renamed the real one to Makefile_back,
+          # leaving no oplus/Makefile at all, so the previous fix alone fails
+          # with "No rule to make target oplus/Makefile". Restore it from
+          # Makefile_back, and make its own obj list unconditional too, since
+          # it's gated behind CONFIG_DRM_OPLUS (unset) and oplus_adfr.o is
+          # additionally gated behind OPLUS_FEATURE_ADFR_KERNEL (also unset),
+          # same unwired-config pattern as the previous two fixes.
+          F="$GITHUB_WORKSPACE/kernel/device_kernel/techpack/display/oplus/Makefile"
+          BACKUP="$GITHUB_WORKSPACE/kernel/device_kernel/techpack/display/oplus/Makefile_back"
+          if [ -f "$BACKUP" ]; then
+            cp "$BACKUP" "$F"
+            sed -i 's/obj-\$(CONFIG_DRM_OPLUS)/obj-y/g' "$F"
+            sed -i 's/OPLUS_FEATURE_ADFR_KERNEL),yes)/1),1)/' "$F"
+            echo "[+] Restored oplus/Makefile from Makefile_back, made unconditional."
+          else
+            echo "[-] $BACKUP not found — check if OnePlus renamed/removed it differently."
             false
           fi
 
