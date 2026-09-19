@@ -247,6 +247,34 @@ jobs:
             false
           fi
 
+      - name: 🩹 Revert redundant oplus/ subdirectory build (duplicate of msm/Makefile)
+        run: |
+          # Correction to the previous two fixes: techpack/display/msm/Makefile
+          # ALREADY lists every file in oplus/ (including oplus_adfr.o) under
+          # msm_drm-$(CONFIG_DRM_OPLUS), and that path is genuinely active in
+          # this build (CONFIG_DRM_OPLUS resolves true here, likely via an
+          # auto-select elsewhere, despite not being an explicit defconfig
+          # line). Enabling obj-y += oplus/ as a second, separate build path
+          # for the same files caused "multiple definition of" link errors
+          # (dsi_panel_hbm_on, oplus_display_get_hbm_mode, etc.), since both
+          # paths now build and link the same objects. Revert both prior
+          # changes to techpack/display: re-comment the oplus/ subdirectory
+          # line, and remove the restored oplus/Makefile so Kbuild doesn't
+          # try to recurse into it at all.
+          DISPLAY_MK="$GITHUB_WORKSPACE/kernel/device_kernel/techpack/display/Makefile"
+          OPLUS_MK="$GITHUB_WORKSPACE/kernel/device_kernel/techpack/display/oplus/Makefile"
+          if grep -q '^obj-y += oplus/$' "$DISPLAY_MK"; then
+            sed -i 's/^obj-y += oplus\/$/#obj-$(CONFIG_DRM_OPLUS) += oplus\//' "$DISPLAY_MK"
+            echo "[+] Re-commented oplus/ subdirectory line in techpack/display/Makefile."
+          else
+            echo "[-] Expected obj-y line not found — check if something else changed it."
+            false
+          fi
+          if [ -f "$OPLUS_MK" ]; then
+            rm -f "$OPLUS_MK"
+            echo "[+] Removed restored oplus/Makefile — msm/Makefile's own list is the sole active path now."
+          fi
+
       - name: 📌 Kernel version suffix (OOS)
         run: |
           cd $GITHUB_WORKSPACE/kernel/device_kernel
