@@ -8,10 +8,29 @@ runs:
         shell: bash
         run: |
           # Get MKDTBO tool to kernel
+          #
+          # NOTE: previously this fetched
+          #   .../libufdt/+archive/refs/heads/main/utils/src.tar.gz
+          # via curl. Google's gitiles "+archive" tarball generator for this repo
+          # does not reliably return gzip data to CI runners (it has been reported
+          # to return an HTML/error body instead, in and outside this project),
+          # which fails as: "gzip: stdin: not in gzip format". A plain `git clone`
+          # against android.googlesource.com (the normal git-over-HTTP protocol,
+          # not the tarball generator) does not have this problem and is already
+          # used elsewhere in this repo (e.g. GCC_64_SOURCE/GCC_32_SOURCE and the
+          # mkboottools clone in build-ready), so use that instead.
           cd $GITHUB_WORKSPACE/kernel/msm-4.19/scripts/dtc
-          ${{ env.CURLX }} https://android.googlesource.com/platform/system/libufdt/+archive/refs/heads/main/utils/src.tar.gz src.tar.gz
-          tar zxvf src.tar.gz
-          rm -f src.tar.gz
+          git clone --depth=1 --branch main https://android.googlesource.com/platform/system/libufdt libufdt_src
+
+          if [[ ! -f "libufdt_src/utils/src/mkdtboimg.py" ]]; then
+            echo "[-] libufdt clone did not contain utils/src/mkdtboimg.py as expected."
+            echo "[-] Contents of the clone:"
+            find libufdt_src -maxdepth 3
+            false
+          fi
+
+          cp -a libufdt_src/utils/src/. .
+          rm -rf libufdt_src
 
           # Hook dtbo generate code to kernel
           cd $GITHUB_WORKSPACE/kernel/msm-4.19
@@ -173,8 +192,20 @@ runs:
           cd $GITHUB_WORKSPACE/kernel/msm-4.19
           mkdir dtbo_tool
           cd dtbo_tool
-          ${{ env.CURLX }} https://android.googlesource.com/platform/system/libufdt/+archive/master/utils.tar.gz mkdtboimg.tar.gz
-          tar zxvf mkdtboimg.tar.gz
+          # Same "+archive" tarball-generator issue as the mkdtboimg fetch above
+          # (see the comment there) — use a plain git clone instead. Also note the
+          # old URL pinned "master", which is not this repo's current branch name.
+          git clone --depth=1 --branch main https://android.googlesource.com/platform/system/libufdt libufdt_src
+
+          if [[ ! -f "libufdt_src/utils/src/mkdtboimg.py" ]]; then
+            echo "[-] libufdt clone did not contain utils/src/mkdtboimg.py as expected."
+            echo "[-] Contents of the clone:"
+            find libufdt_src -maxdepth 3
+            false
+          fi
+
+          cp -a libufdt_src/utils/. .
+          rm -rf libufdt_src
           cd ../
           if [ -d "$GITHUB_WORKSPACE/kernel/msm-4.19/out/arch/"${{ env.KERNEL_ARCH }}"/boot/dts/vendor" ]; then
             python dtbo_tool/src/mkdtboimg.py create $GITHUB_WORKSPACE/kernel/msm-4.19/out/arch/"${{ env.KERNEL_ARCH }}"/boot/dtbo.img $GITHUB_WORKSPACE/kernel/msm-4.19/out/arch/"${{ env.KERNEL_ARCH }}"/boot/dts/vendor/${{ env.GENERATE_CHIP }}/*.dtbo
