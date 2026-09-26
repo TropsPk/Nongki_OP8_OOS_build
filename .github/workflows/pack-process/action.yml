@@ -101,6 +101,77 @@ runs:
 
           echo "PACK_NAME=${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-${{ env.PACK_METHOD }}.zip" >> $GITHUB_ENV
 
+      - name: Make Patched Boot Image (alongside kernel zip)
+        # Builds an additional, ready-to-flash boot.img (and dtbo.img, if this
+        # device produces one) next to the Anykernel3 zip above. Needs
+        # BOOT_SOURCE set to a stock/source boot.img (plain or .zst-compressed)
+        # for this device+build to unpack, patch the kernel of, and repack.
+        if: env.PACK_METHOD == 'Anykernel3' && env.BOOT_SOURCE != ''
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/
+
+          IMAGE_DIR="$GITHUB_WORKSPACE/kernel/msm-4.19/out/arch/${{ env.KERNEL_ARCH }}/boot"
+          TIME=$(date +"%Y%m%d%H%M%S")
+
+          if [[ ! -d "$GITHUB_WORKSPACE/mkboottools" ]]; then
+            git clone https://android.googlesource.com/platform/system/tools/mkbootimg $GITHUB_WORKSPACE/mkboottools -b main-kernel-build-2024 --depth=1
+          fi
+          if [[ ! -f "$GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img" ]]; then
+            if [[ "${{ env.BOOT_SOURCE }}" == *.zst ]]; then
+              ${{ env.CURLX }} "${{ env.BOOT_SOURCE }}" $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img.zst
+              command -v zstd >/dev/null 2>&1 || sudo apt-get install -y zstd
+              zstd -d -f $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img.zst -o $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img
+              rm -f $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img.zst
+            else
+              ${{ env.CURLX }} "${{ env.BOOT_SOURCE }}" $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img
+            fi
+          fi
+
+          FORMAT_MKBOOTIMG=$(echo `mkboottools/unpack_bootimg.py --boot_img=boot_source_${{ env.DEVICE_NAME }}.img --format mkbootimg`)
+
+          rm -rf out
+          mkboottools/unpack_bootimg.py --boot_img boot_source_${{ env.DEVICE_NAME }}.img
+
+          if [[ -f "$IMAGE_DIR/Image.gz-dtb" ]]; then
+            rm -f out/kernel
+            cp -fp $IMAGE_DIR/Image.gz-dtb out/kernel
+            echo "Found Image.gz-dtb !"
+
+          elif [[ -f "$IMAGE_DIR/Image.gz" ]]; then
+            rm -f out/kernel
+            cp -fp $IMAGE_DIR/Image.gz out/kernel
+            echo "Found Image.gz !"
+
+          elif [[ -f "$IMAGE_DIR/Image" ]]; then
+            rm -f out/kernel
+            cp -fp $IMAGE_DIR/Image out/kernel
+            echo "Found Image !"
+
+          fi
+
+          if [[ -f "$IMAGE_DIR/dtb.img" ]]; then
+            cp -fp $IMAGE_DIR/dtb.img out/dtb
+            echo "Found dtb.img, converted dtb !"
+
+          elif [ -f "$IMAGE_DIR/dtb" ]; then
+            echo "Found DTB!"
+            cp -fp $IMAGE_DIR/dtb out/dtb
+
+          fi
+
+          eval "mkboottools/mkbootimg.py $FORMAT_MKBOOTIMG -o ${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-boot.img"
+          echo "BOOT_PACK_NAME=${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-boot.img" >> $GITHUB_ENV
+          echo "[+] Built boot.img from patched kernel."
+
+          if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
+            cp -fp "$IMAGE_DIR/dtbo.img" "${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-dtbo.img"
+            echo "DTBO_PACK_NAME=${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-dtbo.img" >> $GITHUB_ENV
+            echo "[+] Also staged dtbo.img (flashed separately: fastboot flash dtbo)."
+          fi
+
+          rm -f $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img
+
       - name: Make Latest Boot Image
         if: env.PACK_METHOD == 'MKBOOTIMG'
         shell: bash

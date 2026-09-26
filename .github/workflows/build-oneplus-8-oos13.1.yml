@@ -43,7 +43,7 @@ env:
   AK3_SOURCE : "https://github.com/osm0sis/AnyKernel3.git"
   AK3_BRANCH : "master"
 
-  BOOT_SOURCE : ""
+  BOOT_SOURCE : "https://github.com/luk1337/oplus_archive/releases/download/IN2015_13.1.0.593(EX01)/boot.img.zst"
 
   NEED_DTBO : false
   NEED_SAFE_DTBO : false

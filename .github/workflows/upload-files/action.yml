@@ -11,6 +11,16 @@ runs:
           path: |
             kernel/msm-4.19/${{ env.PACK_NAME }}
 
+      - name: Upload Boot Image (alongside kernel zip)
+        if: env.PACK_METHOD == 'Anykernel3' && env.BOOT_SOURCE != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: BootImage-${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}
+          path: |
+            ${{ env.BOOT_PACK_NAME }}
+            ${{ env.DTBO_PACK_NAME }}
+          if-no-files-found: warn
+
       - name: Upload Build Artifacts For Boot Image
         if: env.PACK_METHOD == 'MKBOOTIMG'
         uses: actions/upload-artifact@v7
