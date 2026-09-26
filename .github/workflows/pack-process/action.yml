@@ -164,6 +164,33 @@ runs:
           echo "BOOT_PACK_NAME=${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-boot.img" >> $GITHUB_ENV
           echo "[+] Built boot.img from patched kernel."
 
+          # Repacking with mkbootimg.py drops the source boot.img's AVB hash
+          # footer entirely, leaving an unsigned, under-sized image (the
+          # source partition is padded to a fixed size with a footer; our
+          # fresh output is just header+kernel+ramdisk+dtb with nothing
+          # after it). Restore a footer matching the original partition
+          # size so the artifact is structurally correct. This uses
+          # --algorithm NONE (unsigned) since we don't have OnePlus's
+          # private signing key - it will not pass real AVB verification;
+          # only a device with an unlocked bootloader / verification
+          # disabled can boot an image signed this way.
+          if [[ ! -d "$GITHUB_WORKSPACE/avb" ]]; then
+            git clone https://android.googlesource.com/platform/external/avb $GITHUB_WORKSPACE/avb --depth=1
+          fi
+
+          ORIGINAL_SIZE=$(stat -c%s "$GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img")
+
+          if python3 "$GITHUB_WORKSPACE/avb/avbtool.py" info_image --image "$GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img" 2>/dev/null | grep -q "^Footer version:"; then
+            python3 "$GITHUB_WORKSPACE/avb/avbtool.py" add_hash_footer \
+              --image "${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-boot.img" \
+              --partition_size "$ORIGINAL_SIZE" \
+              --partition_name boot \
+              --algorithm NONE
+            echo "[+] Restored AVB hash footer (unsigned, partition_size=$ORIGINAL_SIZE)."
+          else
+            echo "[-] Source boot.img has no AVB footer, skipped."
+          fi
+
           if [[ -f "$IMAGE_DIR/dtbo.img" ]]; then
             cp -fp "$IMAGE_DIR/dtbo.img" "${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-dtbo.img"
             echo "DTBO_PACK_NAME=${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-dtbo.img" >> $GITHUB_ENV

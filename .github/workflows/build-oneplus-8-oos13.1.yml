@@ -72,9 +72,11 @@ env:
   # silently builds nothing for 19821 (the real OnePlus 8 profile). CONFIG_BUILD_ARM64_DT_OVERLAY=y
   # (set in defconfig_oos.patch) switches 19821 to its overlay branch instead, which uses
   # CONFIG_ARCH_KONA correctly — matching luk1337 and LineageOS's own kona-perf_defconfig.
-  # HAVE_NO_DTBO hooks mkdtimg into the kernel's own Makefile so `make` builds dtbo.img
-  # natively as part of the default target; Pack Process already picks up dtbo.img if present.
-  HAVE_NO_DTBO: "true"
+  # dtbo.img generation disabled: no patch here touches devicetree overlays,
+  # so a built dtbo.img would be identical to the stock partition already on
+  # the device - not worth building/uploading. Flip back to "true" the day a
+  # patch actually changes devicetree overlay sources.
+  HAVE_NO_DTBO: "false"
   HAVE_NO_DTBO_TOOL: "false"
 
   BUILD_DEBUGGER: "false"

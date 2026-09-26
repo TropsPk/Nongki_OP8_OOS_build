@@ -15,10 +15,16 @@ runs:
         if: env.PACK_METHOD == 'Anykernel3' && env.BOOT_SOURCE != ''
         uses: actions/upload-artifact@v7
         with:
-          name: BootImage-${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}
-          path: |
-            ${{ env.BOOT_PACK_NAME }}
-            ${{ env.DTBO_PACK_NAME }}
+          path: ${{ env.BOOT_PACK_NAME }}
+          archive: false
+          if-no-files-found: warn
+
+      - name: Upload DTBO Image (alongside kernel zip)
+        if: env.PACK_METHOD == 'Anykernel3' && env.BOOT_SOURCE != '' && env.DTBO_PACK_NAME != ''
+        uses: actions/upload-artifact@v7
+        with:
+          path: ${{ env.DTBO_PACK_NAME }}
+          archive: false
           if-no-files-found: warn
 
       - name: Upload Build Artifacts For Boot Image
