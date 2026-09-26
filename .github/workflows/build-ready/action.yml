@@ -150,7 +150,7 @@ runs:
           cd $GITHUB_WORKSPACE/kernel/msm-4.19
 
           if [[ -n "${{ env.DEFCONFIG_SOURCE }}" ]]; then
-            ${{ env.CURLX }} ${{ env.DEFCONFIG_SOURCE }} kernel/msm-4.19/arch/"${{ env.KERNEL_ARCH }}"/configs/${{ env.DEFCONFIG_NAME }}
+            ${{ env.CURLX }} "${{ env.DEFCONFIG_SOURCE }}" kernel/msm-4.19/arch/"${{ env.KERNEL_ARCH }}"/configs/${{ env.DEFCONFIG_NAME }}
 
           elif [[ -z "${{ env.DEFCONFIG_ORIGIN_IMAGE }}" ]]; then
             if [[ "${{ env.DEFCONFIG_FROM_BOOT }}" == "true" ]]; then
