@@ -125,12 +125,12 @@ runs:
             git clone https://android.googlesource.com/platform/system/tools/mkbootimg $GITHUB_WORKSPACE/mkboottools -b main-kernel-build-2024 --depth=1
 
             if [[ "${{ env.BOOT_SOURCE }}" == *.zst ]]; then
-              ${{ env.CURLX }} ${{ env.BOOT_SOURCE }} $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img.zst
+              ${{ env.CURLX }} "${{ env.BOOT_SOURCE }}" $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img.zst
               command -v zstd >/dev/null 2>&1 || sudo apt-get install -y zstd
               zstd -d -f $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img.zst -o $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img
               rm -f $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img.zst
             else
-              ${{ env.CURLX }} ${{ env.BOOT_SOURCE }} $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img
+              ${{ env.CURLX }} "${{ env.BOOT_SOURCE }}" $GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img
             fi
             echo "[+] Get MKBOOTIMG successfully!"
             cd kernel/msm-4.19
