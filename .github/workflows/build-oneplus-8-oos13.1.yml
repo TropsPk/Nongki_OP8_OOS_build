@@ -59,14 +59,9 @@ env:
   PATCHES_SOURCE: ""
   PATCHES_BRANCH: ""
 
-  # DroidSpaces 配置已通过 defconfig_oos.patch 注入, 无需 build-process 再 merge droidspaces.config
-  DROIDSPACES_ENABLE: "false"
   NOMOUNT_ENABLE: "false"
 
   KERNEL_PATCH: "false"
-
-  BASEBAND_GUARD_ENABLE: "true"
-  BASEBAND_GUARD_BOOT: "false"
 
   # OOS 设备树直接编译 (非overlay), 通过 OnePlus 官方 Makefile 生成
   GENERATE_DTB: "false"
@@ -139,20 +134,6 @@ jobs:
           cd $GITHUB_WORKSPACE/kernel/msm-4.19
           echo "-g$(git rev-parse --short HEAD)-oos-hotsteel" > .scmversion
           echo "[+] .scmversion written."
-
-      - name: 💿 Patch Kernel of Droidspaces (OOS)
-        run: |
-          cd $GITHUB_WORKSPACE/kernel/msm-4.19/
-          cp /tmp/Patches/Droidspaces/oos_droidspaces.patch ./
-          patch -p1 < oos_droidspaces.patch || true
-          rm -f oos_droidspaces.patch
-          echo "[+] Patched DroidSpaces for OOS successfully."
-
-      - name: 🔒 Patch Kernel of Baseband Guard (OOS, non-GKI)
-        run: |
-          cd $GITHUB_WORKSPACE/kernel/msm-4.19/
-          wget -O- https://github.com/vc-teahouse/Baseband-guard/raw/main/setup.sh | bash
-          echo "[+] Patched Baseband Guard for OOS successfully."
 
       - name: 📝 Apply OOS defconfig fragment
         run: |

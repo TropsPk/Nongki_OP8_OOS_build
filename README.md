@@ -17,16 +17,8 @@ The OnePlus OSS kernel (`OnePlusOSS/android_kernel_oneplus_sm8250`, branch `onep
 
 ## Integrations
 
-This build is **stock** — no root (KernelSU/ReSukiSU) or SUSFS. Only these are integrated:
-
-| Component | Note |
-|---|---|
-| DroidSpaces | cgroup prefix hiding + Non-GKI configs (incl. USER_NS) |
-| Baseband Guard | non-GKI / pre-5.1 LSM style (`security_add_hooks_compat`, no `DEFINE_LSM`) |
-
-> Re:Kernel is **not** integrated: OOS 13.1 already ships its own binder/freeze monitor
-> **HANS** (`CONFIG_OPLUS_HANS=y`, `drivers/staging/android/hans.c`), which covers the same
-> freeze-management role, so Re:Kernel would be redundant (and its enum clashed with `hans.h`).
+This build is fully **minimal** — no root (KernelSU/ReSukiSU), no SUSFS, no DroidSpaces, no
+Baseband Guard. Just OnePlus's own official kernel + vendor/devicetree sources, merged and built.
 
 ## Usage
 
@@ -38,21 +30,9 @@ This build is **stock** — no root (KernelSU/ReSukiSU) or SUSFS. Only these are
 
 | File | Content | Applied by |
 |---|---|---|
-| `Patch/defconfig_oos.patch` | BBG/DroidSpaces Non-GKI configs | workflow step |
-| `Droidspaces/oos_droidspaces.patch` | cgroup prefix + xt_qtaguid panic fix | workflow step |
-| Baseband Guard | fetched at build time via `setup.sh` (non-GKI path) | workflow step |
+| `Patch/defconfig_oos.patch` | DTB overlay-typo workaround (`CONFIG_BUILD_ARM64_DT_OVERLAY`) | workflow step |
 
 > All OOS patches are generated against kernel commit `1d2678a3548f` (OOS13.1 final, 4.19.157-perf).
-
-## Patch Record Archive (Patches/Archive/)
-
-Complete dev record and re-generation guide (in English): `Patches/Archive/README.md`
-- `0001-defconfig-oos.patch` / `0001-droidspaces-oos.patch`
-- Documents the non-obvious OOS facts (devicetree symlink depth, techpack from
-  modules_and_devicetree, no Re:Kernel/HANS, clang-19 KCFLAGS quoting) and every
-  build error + fix so the next person can pick up where we left off.
-- Note: this archive predates the stock (no-root) switch and still documents the
-  now-removed SUSFS+ReSukiSU work for history; see `Patches/Archive/README.md`.
 
 ## Key settings (build-oneplus-8-los23-a16.yml)
 
@@ -71,6 +51,5 @@ there, then verifies the critical symlinks resolve.
 
 ## Credits
 
-[OnePlusOSS](https://github.com/OnePlusOSS) · [Re:Kernel](https://github.com/Sakion-Team/Re-Kernel) ·
-[Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) · [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) ·
+[OnePlusOSS](https://github.com/OnePlusOSS) ·
 [JackA1ltman/NonGKI_Kernel_Build_2nd](https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd)

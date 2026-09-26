@@ -42,9 +42,9 @@ jobs:
       RELEASE_NOTES: |
         Below is the codename reference table. Please select the image or archive you need based on this table.
 
-        | Device Name | Codename | Kernel | System | Android | Method | Root | BBG | DroidSpace | 
-        |----------|----------|----------|----------|----------|----------|----------|----------|----------|
-        | OnePlus 8 | instantnoodle | 4.19 | OxygenOS 13.1 | 13 | AnyKernel3 | Stock (none) | ✓ | ✓ |
+        | Device Name | Codename | Kernel | System | Android | Method | Root | 
+        |----------|----------|----------|----------|----------|----------|----------|
+        | OnePlus 8 | instantnoodle | 4.19 | OxygenOS 13.1 | 13 | AnyKernel3 | Stock (none) |
 
         - Specific device information: [Supported List](Supported_list.md).
 

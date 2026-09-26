@@ -81,44 +81,16 @@ runs:
             fi
           fi
 
-          if [[ "${{ env.DROIDSPACES_ENABLE }}"  == "true" ]]; then
-            echo "================="
-            echo "=  Droidspaces  ="
-            echo "================="
-            ./scripts/kconfig/merge_config.sh -O out/ -m out/.config arch/"${{ env.KERNEL_ARCH }}"/configs/droidspaces.config
-            if [[ "$BUILD_CLANG" == "true" ]]; then
-                echo "==============================="
-                echo "=Execuate olddefconfig (Clang)="
-                echo "==============================="
-                make CC="ccache clang" O=out ARCH="${{ env.KERNEL_ARCH }}" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} olddefconfig
-            else
-                echo "======================="
-                echo "=Execuate olddefconfig="
-                echo "======================="
-                make O=out ARCH="${{ env.KERNEL_ARCH }}" olddefconfig
-            fi
-          fi
-
           if [[ "$BUILD_CLANG" == "true" ]]; then
             echo "======================"
             echo "=Execuate Clang Build="
             echo "======================"
-
-            if [[ "${{ env.BASEBAND_GUARD_ENABLE }}" == "true" ]]; then
-                make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" security/selinux/
-                echo "[+] Pre-built SELinux done."
-            fi
 
             make -j$(nproc --all) CC="ccache clang" ${{ env.CUSTOM_CMDS }} ${{ env.EXTRA_CMDS }} O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
           else
             echo "===================="
             echo "=Execuate GCC Build="
             echo "===================="
-
-            if [[ "${{ env.BASEBAND_GUARD_ENABLE }}" == "true" ]]; then
-                make -j$(nproc --all) O=out ARCH="${{ env.KERNEL_ARCH }}" security/selinux/
-                echo "[+] Pre-built SELinux done."
-            fi
 
             make -j$(nproc --all) O=out ARCH="${{ env.KERNEL_ARCH }}" 2>&1|tee error.log
           fi

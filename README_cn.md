@@ -17,16 +17,8 @@ LineageOS 23.2 (A16) 换成 **一加官方 OnePlus OSS 内核**。
 
 ## 集成内容
 
-本构建为**原生（stock）**——不含 root（KernelSU/ReSukiSU）或 SUSFS。仅集成以下内容：
-
-| 组件 | 说明 |
-|---|---|
-| DroidSpaces | cgroup 前缀隐藏 + Non-GKI 配置 (含 USER_NS) |
-| Baseband Guard | 非 GKI / pre-5.1 LSM 风格 (`security_add_hooks_compat`, 无 `DEFINE_LSM`) |
-
-> **不集成 Re:Kernel**：OOS 13.1 自带 binder/冻结监控 **HANS**（`CONFIG_OPLUS_HANS=y`,
-> `drivers/staging/android/hans.c`），已覆盖 Re:Kernel 的冻结管理功能，再集成反而冗余
-> （且 Re:Kernel 的 `SIGNAL` 枚举与 `hans.h` 冲突）。
+本构建完全**极简（minimal）**——不含 root（KernelSU/ReSukiSU）、不含 SUSFS、不含 DroidSpaces、
+不含 Baseband Guard。只是一加官方内核 + vendor/devicetree 源码，合并后直接编译。
 
 ## 使用方法
 
@@ -39,21 +31,9 @@ LineageOS 23.2 (A16) 换成 **一加官方 OnePlus OSS 内核**。
 
 | 文件 | 内容 | 应用时机 |
 |---|---|---|
-| `Patch/defconfig_oos.patch` | BBG/DroidSpaces Non-GKI 配置 | 工作流步骤 |
-| `Droidspaces/oos_droidspaces.patch` | cgroup 前缀 + xt_qtaguid panic 修复 | 工作流步骤 |
-| Baseband Guard | 构建时 `setup.sh` 动态拉取（非 GKI 路径） | 工作流步骤 |
+| `Patch/defconfig_oos.patch` | 设备树 overlay 拼写错误修复 (`CONFIG_BUILD_ARM64_DT_OVERLAY`) | 工作流步骤 |
 
 > 所有 OOS 补丁基于内核提交 `1d2678a3548f`（OOS13.1 最终版, 4.19.157-perf）生成。
-
-## 补丁记录存档 (Patches/Archive/)
-
-完整开发记录与重生成指南（英文）：`Patches/Archive/README.md`
-- `0001-defconfig-oos.patch` / `0001-droidspaces-oos.patch`
-- 记录了 OOS 特有的非显而易见事实（设备树 symlink 深度、techpack 来自 modules_and_devicetree、
-  无 Re:Kernel/HANS、clang-19 KCFLAGS 引号）以及每个构建错误与修复，
-  便于后续者从当前进度续接。
-- 注：该存档早于本次切换为原生（无 root）之前，仍保留已移除的 SUSFS+ReSukiSU
-  相关记录作为历史资料，详见 `Patches/Archive/README.md`。
 
 ## 关键配置项 (build-oneplus-8-los23-a16.yml)
 
@@ -72,6 +52,5 @@ LineageOS 23.2 (A16) 换成 **一加官方 OnePlus OSS 内核**。
 
 ## 鸣谢
 
-[OnePlusOSS](https://github.com/OnePlusOSS) · [Re:Kernel](https://github.com/Sakion-Team/Re-Kernel) ·
-[Droidspaces](https://github.com/ravindu644/Droidspaces-OSS) · [Baseband-guard](https://github.com/vc-teahouse/Baseband-guard) ·
+[OnePlusOSS](https://github.com/OnePlusOSS) ·
 [JackA1ltman/NonGKI_Kernel_Build_2nd](https://github.com/JackA1ltman/NonGKI_Kernel_Build_2nd)
