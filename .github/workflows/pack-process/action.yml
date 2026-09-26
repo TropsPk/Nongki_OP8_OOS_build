@@ -160,8 +160,8 @@ runs:
 
           fi
 
-          eval "mkboottools/mkbootimg.py $FORMAT_MKBOOTIMG -o ${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-boot.img"
-          echo "BOOT_PACK_NAME=${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-boot.img" >> $GITHUB_ENV
+          eval "mkboottools/mkbootimg.py $FORMAT_MKBOOTIMG -o boot.img"
+          echo "BOOT_PACK_NAME=boot.img" >> $GITHUB_ENV
           echo "[+] Built boot.img from patched kernel."
 
           # Repacking with mkbootimg.py drops the source boot.img's AVB hash
@@ -182,7 +182,7 @@ runs:
 
           if python3 "$GITHUB_WORKSPACE/avb/avbtool.py" info_image --image "$GITHUB_WORKSPACE/boot_source_${{ env.DEVICE_NAME }}.img" 2>/dev/null | grep -q "^Footer version:"; then
             python3 "$GITHUB_WORKSPACE/avb/avbtool.py" add_hash_footer \
-              --image "${{ env.DEVICE_CODENAME }}-${{ env.ROM_TEXT }}-$TIME-boot.img" \
+              --image "boot.img" \
               --partition_size "$ORIGINAL_SIZE" \
               --partition_name boot \
               --algorithm NONE
