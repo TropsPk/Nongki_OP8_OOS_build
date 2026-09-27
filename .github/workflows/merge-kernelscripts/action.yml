@@ -17,18 +17,25 @@ runs:
 
           KSCRIPTS="oos_kernelscripts_tmp/device/qcom/kernelscripts"
           if [ -d "$KSCRIPTS" ]; then
-            # Flatten onto the kernel root: build.sh/envsetup.sh/kernel_definitions.mk/fetch_kpb.sh/
-            # build_test.sh/build.config.net_test/static_analysis are OnePlus's OEM build-driver +
-            # feature definitions and expect to sit at the kernel repo's own root, not nested under
-            # device/qcom/kernelscripts.
-            find "$KSCRIPTS" -mindepth 1 -maxdepth 1 ! -name 'build.config' -exec cp -a {} kernel/msm-4.19/ \;
-            echo "[+] kernelscripts merged into kernel/msm-4.19/ (root)."
+            # build.sh does:
+            #   ROOT_DIR=$(readlink -f $(dirname $0)/..)
+            #   source "${ROOT_DIR}/build/envsetup.sh"
+            # so build.sh/envsetup.sh/kernel_definitions.mk/fetch_kpb.sh/build_test.sh/
+            # build.config.net_test/static_analysis (OnePlus's OEM build-driver + feature
+            # definitions, not yet wired into this workflow's build) must live inside a directory
+            # literally named "build", sitting as a SIBLING of the kernel source dir
+            # (kernel/msm-4.19), not merged inside it. Correct layout:
+            #   kernel/build/{build.sh,envsetup.sh,...}   <- this step
+            #   kernel/msm-4.19/                           <- kernel source, untouched
+            mkdir -p kernel/build
+            find "$KSCRIPTS" -mindepth 1 -maxdepth 1 ! -name 'build.config' -exec cp -a {} kernel/build/ \;
+            echo "[+] kernelscripts merged into kernel/build/ (sibling of kernel/msm-4.19)."
 
             # build.config -> ../build.config (device/qcom/build.config) is a dangling symlink in
             # modules_and_devicetree: that file belongs to a separate OnePlus manifest project we
             # don't have. Skipped rather than carried over broken.
-            if [ ! -e kernel/msm-4.19/build.config ]; then
-              echo "[-] kernel/msm-4.19/build.config not present (dangling symlink upstream, source repo unavailable) — skipped, non-fatal."
+            if [ ! -e kernel/build/build.config ]; then
+              echo "[-] kernel/build/build.config not present (dangling symlink upstream, source repo unavailable) — skipped, non-fatal."
             fi
           else
             echo "[-] device/qcom/kernelscripts not found in modules_and_devicetree."

@@ -63,6 +63,11 @@ env:
 
   KERNEL_PATCH: "false"
 
+  # Merge OnePlus's device/qcom/kernelscripts (build.sh/envsetup.sh/kernel_definitions.mk/...)
+  # into kernel/build/. Kept in case we switch to building via build/build.sh later; the current
+  # make-based build-process does not use these files, so this is safe to set to "false".
+  MERGE_KERNELSCRIPTS: "true"
+
   # OOS device tree compiles directly (non-overlay), generated via OnePlus's official Makefile
   GENERATE_DTB: "false"
   GENERATE_CHIP: "qcom"
@@ -106,6 +111,7 @@ jobs:
         uses: ./.github/workflows/build-ready
 
       - name: 🧩 Merge OEM kernelscripts
+        if: env.MERGE_KERNELSCRIPTS == 'true'
         uses: ./.github/workflows/merge-kernelscripts
 
       - name: 🏗️ Setup OOS vendor/devicetree layout
