@@ -154,6 +154,41 @@ jobs:
           fi
           echo "::endgroup::"
 
+      - name: 🔩 Fix modpost section mismatch (oplus_project.c)
+        run: |
+          cd $GITHUB_WORKSPACE
+          # update_manifest()/update_telephony_manifest() (vendor/oplus/kernel/system/
+          # oplus_project/qcom/oplus_project.c) dereference boot_command_line, which is
+          # __initdata. Their only caller, oplus_project_init(), is already __init
+          # (arch_initcall) and runs exactly once at boot before init memory is freed,
+          # so this is not a live bug — but modpost can't prove that statically because
+          # the two helpers themselves aren't marked __init, which is what
+          # CONFIG_DEBUG_SECTION_MISMATCH=y's full analysis flags:
+          #   WARNING: vmlinux.o(.text+...): Section mismatch in reference from the
+          #   function update_manifest() to the variable .init.data:boot_command_line
+          # Standard fix: mark both helpers __init too, matching their caller — this
+          # also lets their code be freed after boot like the rest of __init text,
+          # instead of staying resident forever.
+          SRC="vendor/oplus/kernel/system/oplus_project/qcom/oplus_project.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q "^static void update_manifest(struct proc_dir_entry \*parent)$" "$SRC"; then
+              sed -i \
+                -e 's/^static void update_manifest(struct proc_dir_entry \*parent)$/static void __init update_manifest(struct proc_dir_entry *parent)/' \
+                -e 's/^static void update_telephony_manifest(struct proc_dir_entry \*parent)$/static void __init update_telephony_manifest(struct proc_dir_entry *parent)/' \
+                "$SRC"
+              echo "[+] oplus_project.c: update_manifest()/update_telephony_manifest() marked __init."
+            elif grep -q "^static void __init update_manifest(struct proc_dir_entry \*parent)$" "$SRC"; then
+              echo "[+] oplus_project.c: already patched, skipping."
+            else
+              echo "[-] oplus_project.c: update_manifest() not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — was the OOS vendor/devicetree tree fetched before this step?"
+            false
+          fi
+
       - name: 🏗️ Setup OOS vendor/devicetree layout
         run: |
           # OnePlus OOS kernel's vendor symlink points at ../../../../../../vendor
