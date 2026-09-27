@@ -1,0 +1,41 @@
+name: 'Merge Qualcomm open-source WLAN driver into the kernel tree.'
+
+runs:
+  using: 'composite'
+  steps:
+      - name: Merge WLAN driver
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "::group::[+] Fetching vendor/qcom/opensource/wlan (sparse)..."
+          # Sparse partial-clone: pulls only vendor/qcom/opensource/wlan from modules_and_devicetree.
+          # This is not touched by the techpack merge in build-ready (that one only pulls
+          # kernel/msm-4.19/techpack/{camera,display,video}).
+          git clone --depth=1 --filter=blob:none --sparse "${{ env.VENDOR_SOURCE }}" -b "${{ env.VENDOR_BRANCH }}" oos_wlan_tmp
+          cd oos_wlan_tmp
+          git sparse-checkout set vendor/qcom/opensource/wlan
+          cd ..
+
+          WLAN_SRC="oos_wlan_tmp/vendor/qcom/opensource/wlan"
+          # qcacld-3.0/Kbuild's own default paths (no ANDROID_BUILD_TOP set):
+          #   WLAN_ROOT        := drivers/staging/qcacld-3.0
+          #   WLAN_COMMON_ROOT := ../qca-wifi-host-cmn   -> drivers/staging/qca-wifi-host-cmn
+          #   WLAN_FW_API      := ../fw-api              -> drivers/staging/fw-api
+          # All three must land as siblings under kernel/msm-4.19/drivers/staging/, matching the
+          # module's own path assumptions exactly. It builds as an external kbuild module
+          # (make -C $(KERNEL_SRC) M=drivers/staging/qcacld-3.0 modules), not via
+          # drivers/staging/Makefile obj-y, so no Kconfig wiring is needed for the copy itself —
+          # only a build step later actually invokes it (not added yet).
+          for d in qcacld-3.0 qca-wifi-host-cmn fw-api; do
+            if [ -d "$WLAN_SRC/$d" ]; then
+              rm -rf kernel/msm-4.19/drivers/staging/$d
+              cp -a "$WLAN_SRC/$d" kernel/msm-4.19/drivers/staging/$d
+              echo "[+] drivers/staging/$d merged."
+            else
+              echo "[-] $d not found under vendor/qcom/opensource/wlan."
+              false
+            fi
+          done
+
+          rm -rf oos_wlan_tmp
+          echo "::endgroup::"

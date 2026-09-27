@@ -68,6 +68,10 @@ env:
   # make-based build-process does not use these files, so this is safe to set to "false".
   MERGE_KERNELSCRIPTS: "true"
 
+  # Merge Qualcomm's open-source WLAN driver (qcacld-3.0 + qca-wifi-host-cmn + fw-api) from
+  # modules_and_devicetree into kernel/msm-4.19/drivers/staging/. Set to "false" to skip.
+  MERGE_WLAN: "true"
+
   # OOS device tree compiles directly (non-overlay), generated via OnePlus's official Makefile
   GENERATE_DTB: "false"
   GENERATE_CHIP: "qcom"
@@ -113,6 +117,10 @@ jobs:
       - name: 🧩 Merge OEM kernelscripts
         if: env.MERGE_KERNELSCRIPTS == 'true'
         uses: ./.github/workflows/merge-kernelscripts
+
+      - name: 📶 Merge WLAN driver (qcacld-3.0)
+        if: env.MERGE_WLAN == 'true'
+        uses: ./.github/workflows/merge-wlan
 
       - name: 🏗️ Setup OOS vendor/devicetree layout
         run: |
