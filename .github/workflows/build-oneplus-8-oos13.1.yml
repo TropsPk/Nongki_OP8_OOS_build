@@ -105,6 +105,9 @@ jobs:
       - name: ⚙️ Get neccssary tools
         uses: ./.github/workflows/build-ready
 
+      - name: 🧩 Merge OEM kernelscripts
+        uses: ./.github/workflows/merge-kernelscripts
+
       - name: 🏗️ Setup OOS vendor/devicetree layout
         run: |
           # OnePlus OOS kernel's vendor symlink points at ../../../../../../vendor

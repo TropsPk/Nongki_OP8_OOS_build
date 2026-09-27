@@ -1,0 +1,39 @@
+name: 'Merge OEM kernelscripts into the kernel root.'
+
+runs:
+  using: 'composite'
+  steps:
+      - name: Merge kernelscripts
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "::group::[+] Fetching device/qcom/kernelscripts (sparse)..."
+          # Sparse partial-clone: pulls only device/qcom/kernelscripts from modules_and_devicetree
+          # instead of a full clone (~4MB vs ~50MB) since that's all this step needs.
+          git clone --depth=1 --filter=blob:none --sparse "${{ env.VENDOR_SOURCE }}" -b "${{ env.VENDOR_BRANCH }}" oos_kernelscripts_tmp
+          cd oos_kernelscripts_tmp
+          git sparse-checkout set device/qcom/kernelscripts
+          cd ..
+
+          KSCRIPTS="oos_kernelscripts_tmp/device/qcom/kernelscripts"
+          if [ -d "$KSCRIPTS" ]; then
+            # Flatten onto the kernel root: build.sh/envsetup.sh/kernel_definitions.mk/fetch_kpb.sh/
+            # build_test.sh/build.config.net_test/static_analysis are OnePlus's OEM build-driver +
+            # feature definitions and expect to sit at the kernel repo's own root, not nested under
+            # device/qcom/kernelscripts.
+            find "$KSCRIPTS" -mindepth 1 -maxdepth 1 ! -name 'build.config' -exec cp -a {} kernel/msm-4.19/ \;
+            echo "[+] kernelscripts merged into kernel/msm-4.19/ (root)."
+
+            # build.config -> ../build.config (device/qcom/build.config) is a dangling symlink in
+            # modules_and_devicetree: that file belongs to a separate OnePlus manifest project we
+            # don't have. Skipped rather than carried over broken.
+            if [ ! -e kernel/msm-4.19/build.config ]; then
+              echo "[-] kernel/msm-4.19/build.config not present (dangling symlink upstream, source repo unavailable) — skipped, non-fatal."
+            fi
+          else
+            echo "[-] device/qcom/kernelscripts not found in modules_and_devicetree."
+            false
+          fi
+
+          rm -rf oos_kernelscripts_tmp
+          echo "::endgroup::"
