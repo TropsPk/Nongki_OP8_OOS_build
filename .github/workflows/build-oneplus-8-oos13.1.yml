@@ -122,6 +122,38 @@ jobs:
         if: env.MERGE_WLAN == 'true'
         uses: ./.github/workflows/merge-wlan
 
+      - name: 🩹 Apply kernel fixes
+        if: env.MERGE_WLAN == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "::group::[+] Patching qcacld-3.0 populate_mdie() prototype..."
+          # Stock qcacld-3.0 (as released by OnePlusOSS) declares populate_mdie()
+          # with an unbounded array parameter in the header:
+          #   void populate_mdie(..., uint8_t mdie[]);              (parser_api.h)
+          # but defines it with a bounded array matching SIR_MDIE_SIZE (3):
+          #   void populate_mdie(..., uint8_t mdie[SIR_MDIE_SIZE])  (parser_api.c)
+          # clang 15+ flags this declaration/definition mismatch via
+          # -Warray-parameter, which our -Werror promotes to a hard build error:
+          #   error: argument 'mdie' of type 'uint8_t[3]' with mismatched bound
+          # Same fix XTD kernels ship: make the header bound match the definition.
+          HDR="kernel/msm-4.19/drivers/staging/qcacld-3.0/core/mac/src/include/parser_api.h"
+
+          if [ -f "$HDR" ]; then
+            if grep -q "uint8_t mdie\[\]);" "$HDR"; then
+              sed -i 's/uint8_t mdie\[\]);/uint8_t mdie[SIR_MDIE_SIZE]);/' "$HDR"
+              echo "[+] parser_api.h: populate_mdie() bound fixed to SIR_MDIE_SIZE."
+            elif grep -q "uint8_t mdie\[SIR_MDIE_SIZE\]);" "$HDR"; then
+              echo "[+] parser_api.h: populate_mdie() already patched, skipping."
+            else
+              echo "[-] parser_api.h: populate_mdie() prototype not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $HDR not found — was the WLAN driver merged before this step?"
+            false
+          fi
+          echo "::endgroup::"
+
       - name: 🏗️ Setup OOS vendor/devicetree layout
         run: |
           # OnePlus OOS kernel's vendor symlink points at ../../../../../../vendor
