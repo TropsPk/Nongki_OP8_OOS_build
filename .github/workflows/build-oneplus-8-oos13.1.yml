@@ -213,6 +213,33 @@ jobs:
           done
           echo "[+] OOS vendor/devicetree layout ready."
 
+      - name: 🧱 Fix last_boot_reason hardcoded module (force built-in)
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # drivers/soc/oplus/system/last_boot_reason/Makefile (reached through the
+          # drivers/soc/oplus/system -> vendor/oplus/kernel/system symlink verified
+          # above) hardcodes "obj-m += last_boot_reason.o" directly — unlike every
+          # other driver here, this isn't obj-$(CONFIG_X), so its parent Kconfig
+          # symbol (CONFIG_OPLUS_FEATURE_LAST_BOOT_REASON, default y) never mattered:
+          # it always builds as last_boot_reason.ko no matter what the defconfig says.
+          # Force it built-in to match XTD's fully monolithic (zero .ko) build.
+          MK="drivers/soc/oplus/system/last_boot_reason/Makefile"
+
+          if [ -f "$MK" ]; then
+            if grep -q "^obj-m += last_boot_reason.o" "$MK"; then
+              sed -i 's/^obj-m += last_boot_reason.o/obj-y += last_boot_reason.o/' "$MK"
+              echo "[+] last_boot_reason: forced built-in (obj-m -> obj-y)."
+            elif grep -q "^obj-y += last_boot_reason.o" "$MK"; then
+              echo "[+] last_boot_reason: already built-in, skipping."
+            else
+              echo "[-] last_boot_reason: obj-m line not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $MK not found — was the vendor/devicetree layout set up first?"
+            false
+          fi
+
       - name: 📌 Kernel version suffix (OOS)
         run: |
           cd $GITHUB_WORKSPACE/kernel/msm-4.19
