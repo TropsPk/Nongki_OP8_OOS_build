@@ -154,6 +154,121 @@ jobs:
           fi
           echo "::endgroup::"
 
+      - name: 📶 Fix qcacld-3.0 Kconfig (WLAN profile symbol)
+        if: env.MERGE_WLAN == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          # defconfig_oos.patch sets CONFIG_QCA_CLD_WLAN_PROFILE="qca6390", but stock
+          # qcacld-3.0/Kconfig never defines that symbol. Kconfig silently drops
+          # unknown symbols from a defconfig, so .config never gets the line and Kbuild
+          # falls back to WLAN_PROFILE := default — i.e. the wrong chip profile
+          # (the qca6390 datapath, dp/wifi3.0 + hal/wifi3.0, was never compiled).
+          # Define it as a real string symbol so qca6390 survives into .config.
+          KC="kernel/msm-4.19/drivers/staging/qcacld-3.0/Kconfig"
+
+          if [ -f "$KC" ]; then
+            if grep -q "^config QCA_CLD_WLAN_PROFILE$" "$KC"; then
+              echo "[+] qcacld Kconfig: QCA_CLD_WLAN_PROFILE already defined, skipping."
+            elif grep -q "^if QCA_CLD_WLAN != n$" "$KC"; then
+              printf '\nconfig QCA_CLD_WLAN_PROFILE\n\tstring "Qualcomm Atheros CLD WLAN build profile"\n\tdefault "default"\n\thelp\n\t  Name of the configs/<profile>_defconfig that Kbuild includes\n\t  (for example qca6390).\n' > /tmp/qca_profile_sym.kconfig
+              sed -i '/^if QCA_CLD_WLAN != n$/r /tmp/qca_profile_sym.kconfig' "$KC"
+              rm -f /tmp/qca_profile_sym.kconfig
+              echo "[+] qcacld Kconfig: added QCA_CLD_WLAN_PROFILE string symbol."
+            else
+              echo "[-] qcacld Kconfig: 'if QCA_CLD_WLAN != n' anchor not found."
+              false
+            fi
+          else
+            echo "[-] $KC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+      - name: 📶 Fix qcacld-3.0 Kbuild (profile quotes, TARGET_BUILD_VARIANT, BUILD_TAG)
+        if: env.MERGE_WLAN == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          KB="kernel/msm-4.19/drivers/staging/qcacld-3.0/Kbuild"
+
+          if [ ! -f "$KB" ]; then
+            echo "[-] $KB not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+          # 1) Quotes: once the profile is a Kconfig string symbol, Kconfig writes it as
+          #    CONFIG_QCA_CLD_WLAN_PROFILE="qca6390" (quotes included), so the stock
+          #      include $(WLAN_ROOT)/configs/$(CONFIG_QCA_CLD_WLAN_PROFILE)_defconfig
+          #    looks for configs/"qca6390"_defconfig. Strip the quotes in the include.
+          if grep -q '^include $(WLAN_ROOT)/configs/$(CONFIG_QCA_CLD_WLAN_PROFILE)_defconfig$' "$KB"; then
+            sed -i 's|^include $(WLAN_ROOT)/configs/$(CONFIG_QCA_CLD_WLAN_PROFILE)_defconfig$|include $(WLAN_ROOT)/configs/$(subst ",,$(CONFIG_QCA_CLD_WLAN_PROFILE))_defconfig|' "$KB"
+            echo "[+] Kbuild: profile include now strips quotes."
+          elif grep -q '^include $(WLAN_ROOT)/configs/$(subst ",,$(CONFIG_QCA_CLD_WLAN_PROFILE))_defconfig$' "$KB"; then
+            echo "[+] Kbuild: profile include already strips quotes, skipping."
+          else
+            echo "[-] Kbuild: profile include not found in expected form."
+            false
+          fi
+
+          # 2) TARGET_BUILD_VARIANT := user, set before the profile include. The profile
+          #    files gate debug features on "ifneq ($(TARGET_BUILD_VARIANT),user)"
+          #    (CRASH_INJECT, DESC_DUP_DETECT_DEBUG, DEBUG_RX_RING_BUFFER, PKTLOG, ...);
+          #    nothing in this build sets it, so a release kernel got the debug set.
+          if grep -q '^TARGET_BUILD_VARIANT := user$' "$KB"; then
+            echo "[+] Kbuild: TARGET_BUILD_VARIANT already set, skipping."
+          else
+            sed -i '/^include $(WLAN_ROOT)\/configs\//i TARGET_BUILD_VARIANT := user' "$KB"
+            echo "[+] Kbuild: TARGET_BUILD_VARIANT := user."
+          fi
+
+          # 3) BUILD_TAG off, set after the profile include (the profile enables
+          #    CONFIG_BUILD_TAG := y). With it on, Kbuild shells out to git reflog/log
+          #    inside the driver dir — which is not a git repo here, hence the
+          #    "fatal: ambiguous argument '<sha>~..HEAD'" noise — and stamps the current
+          #    time into wlan_hdd_main.o, defeating ccache for that object every build.
+          if grep -q '^CONFIG_BUILD_TAG := n$' "$KB"; then
+            echo "[+] Kbuild: BUILD_TAG already disabled, skipping."
+          else
+            sed -i '/^include $(WLAN_ROOT)\/configs\//a CONFIG_BUILD_TAG := n' "$KB"
+            echo "[+] Kbuild: CONFIG_BUILD_TAG := n."
+          fi
+
+          # Verify the end state, in order.
+          grep -n -A1 -B1 '^include $(WLAN_ROOT)/configs/' "$KB"
+          grep -q '^TARGET_BUILD_VARIANT := user$' "$KB"
+          grep -q '^CONFIG_BUILD_TAG := n$' "$KB"
+
+      - name: 📶 Fix qcacld-3.0 dp_main.c (IPA_OFFLOAD guard)
+        if: env.MERGE_WLAN == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          # dp_runtime_suspend() in qca-wifi-host-cmn/dp/wifi3.0/dp_main.c uses
+          # IPA_TCL_DATA_RING_IDX unguarded, but dp_ipa.h only defines it inside
+          # "#ifdef IPA_OFFLOAD". With the qca6390 profile IPA_OFFLOAD is off here
+          # (CONFIG_IPA3 := n, no ENABLE_IPA), so the identifier is undeclared:
+          #   error: use of undeclared identifier 'IPA_TCL_DATA_RING_IDX'
+          # Wrap the check in the same #ifdef the macro lives under.
+          SRC="kernel/msm-4.19/drivers/staging/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c"
+
+          if [ -f "$SRC" ]; then
+            python3 - "$SRC" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          old = "\t\t\tif (i == IPA_TCL_DATA_RING_IDX)\n\t\t\t\tcontinue;\n"
+          new = "#ifdef IPA_OFFLOAD\n" + old + "#endif\n"
+          if new in s:
+              print("[+] dp_main.c: IPA_TCL_DATA_RING_IDX check already guarded, skipping.")
+          elif s.count(old) == 1:
+              open(p, "w").write(s.replace(old, new))
+              print("[+] dp_main.c: IPA_TCL_DATA_RING_IDX check wrapped in #ifdef IPA_OFFLOAD.")
+          else:
+              print("[-] dp_main.c: IPA_TCL_DATA_RING_IDX check not found in expected form.")
+              sys.exit(1)
+          PY
+          else
+            echo "[-] $SRC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
       - name: 🔩 Fix modpost section mismatch (oplus_project.c)
         run: |
           cd $GITHUB_WORKSPACE
@@ -182,6 +297,37 @@ jobs:
               echo "[+] oplus_project.c: already patched, skipping."
             else
               echo "[-] oplus_project.c: update_manifest() not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — was the OOS vendor/devicetree tree fetched before this step?"
+            false
+          fi
+
+      - name: 🔩 Fix modpost section mismatch (phoenix_reboot_speed.c)
+        run: |
+          cd $GITHUB_WORKSPACE
+          # tp_initcall_start_cb()/tp_initcall_finish_cb() are marked __init_or_module.
+          # That expands to nothing when built as a module, but to __init when built-in
+          # (our CONFIG_MODULES=n monolithic build), so they land in .init.text — yet the
+          # persistent `interests[]` table (plain .data) points at them, and tp_deinit()
+          # reads that table later from userspace (write to /proc/bootprof), i.e. after
+          # init memory is freed:
+          #   WARNING: vmlinux.o(.data+...): Section mismatch in reference from the
+          #   variable interests to the function .init.text:tp_initcall_start_cb()
+          # Marking `interests` __initdata instead would be wrong (tp_deinit needs it
+          # after boot), so drop __init_or_module from the two callbacks: they stay
+          # resident (small) and the probe table never points into freed memory.
+          SRC="vendor/oplus/kernel/system/oplus_phoenix/phoenix_reboot_speed.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q "^static __init_or_module void$" "$SRC"; then
+              sed -i 's/^static __init_or_module void$/static void/' "$SRC"
+              echo "[+] phoenix_reboot_speed.c: tp_initcall_*_cb no longer __init_or_module."
+            elif ! grep -q "__init_or_module" "$SRC"; then
+              echo "[+] phoenix_reboot_speed.c: already patched, skipping."
+            else
+              echo "[-] phoenix_reboot_speed.c: __init_or_module found in unexpected form."
               false
             fi
           else
