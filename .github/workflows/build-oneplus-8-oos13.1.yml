@@ -154,7 +154,7 @@ jobs:
           fi
           echo "::endgroup::"
 
-      - name: 📶 Fix qcacld-3.0 Kconfig (WLAN profile symbol)
+      - name: 🩹 Fix qcacld-3.0 Kconfig (WLAN profile symbol)
         if: env.MERGE_WLAN == 'true'
         run: |
           cd $GITHUB_WORKSPACE
@@ -183,7 +183,7 @@ jobs:
             false
           fi
 
-      - name: 📶 Fix qcacld-3.0 Kbuild (profile quotes, TARGET_BUILD_VARIANT, BUILD_TAG)
+      - name: 🩹 Fix qcacld-3.0 Kbuild (profile quotes, TARGET_BUILD_VARIANT, BUILD_TAG)
         if: env.MERGE_WLAN == 'true'
         run: |
           cd $GITHUB_WORKSPACE
@@ -236,7 +236,7 @@ jobs:
           grep -q '^TARGET_BUILD_VARIANT := user$' "$KB"
           grep -q '^CONFIG_BUILD_TAG := n$' "$KB"
 
-      - name: 📶 Fix qcacld-3.0 dp_main.c (IPA_OFFLOAD guard)
+      - name: 🩹 Fix qcacld-3.0 dp_main.c (IPA_OFFLOAD guard)
         if: env.MERGE_WLAN == 'true'
         run: |
           cd $GITHUB_WORKSPACE
@@ -269,7 +269,7 @@ jobs:
             false
           fi
 
-      - name: 📶 Fix qcacld-3.0 wlan_hdd_sysfs.c (driver root obj guard)
+      - name: 🩹 Fix qcacld-3.0 wlan_hdd_sysfs.c (driver root obj guard)
         if: env.MERGE_WLAN == 'true'
         run: |
           cd $GITHUB_WORKSPACE
@@ -332,7 +332,7 @@ jobs:
             false
           fi
 
-      - name: 🔩 Fix modpost section mismatch (oplus_project.c)
+      - name: 🩹 Fix modpost section mismatch (oplus_project.c)
         run: |
           cd $GITHUB_WORKSPACE
           # update_manifest()/update_telephony_manifest() (vendor/oplus/kernel/system/
@@ -367,7 +367,7 @@ jobs:
             false
           fi
 
-      - name: 🔩 Fix modpost section mismatch (phoenix_reboot_speed.c)
+      - name: 🩹 Fix modpost section mismatch (phoenix_reboot_speed.c)
         run: |
           cd $GITHUB_WORKSPACE
           # tp_initcall_start_cb()/tp_initcall_finish_cb() are marked __init_or_module.
@@ -422,7 +422,7 @@ jobs:
           done
           echo "[+] OOS vendor/devicetree layout ready."
 
-      - name: 🧱 Fix last_boot_reason hardcoded module (force built-in)
+      - name: 🩹 Fix last_boot_reason hardcoded module (force built-in)
         run: |
           cd $GITHUB_WORKSPACE/kernel/msm-4.19
           # drivers/soc/oplus/system/last_boot_reason/Makefile (reached through the
