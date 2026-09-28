@@ -11,7 +11,8 @@ env:
 
   BRAND_SHOW_FLAG : "oneplus"
 
-  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-android-"
+  # OEM kernel_definitions.mk: real_cc := REAL_CC=... CLANG_TRIPLE=aarch64-linux-gnu-
+  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
   # OOS 4.19.157 old codebase + clang 19: disable clang's newer default -Werror strict warnings
   # KCFLAGS value must be quoted (it contains spaces), otherwise make only takes the first argument
   EXTRA_CMDS : 'KCFLAGS="-Wno-strict-prototypes -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-implicit-function-declaration -Wno-unused-but-set-variable"'
@@ -89,9 +90,11 @@ env:
   BUILD_DEBUGGER: "false"
   SKIP_PATCH: "false"
 
-  # OOS defconfig already embeds oplus config, no need to separately merge oplus.config
-  BUILD_OTHER_CONFIG: "false"
-  MERGE_CONFIG_FILES: ""
+  # OEM buildkernel.sh debugfs_disable(): on TARGET_BUILD_VARIANT=user (retail OOS) it merges
+  # vendor/debugfs.config (CONFIG_DEBUG_FS=n, CONFIG_PAGE_OWNER=n) on top of the perf defconfig.
+  # OOS defconfig already embeds oplus config, so oplus.config is not merged.
+  BUILD_OTHER_CONFIG: "true"
+  MERGE_CONFIG_FILES: "vendor/debugfs.config"
 
   FREE_MORE_SPACE: "false"
 
