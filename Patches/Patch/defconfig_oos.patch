@@ -23,20 +23,6 @@ index 5b64d899..45ef3576 100755
  CONFIG_LOCALVERSION="-perf"
  # CONFIG_LOCALVERSION_AUTO is not set
  CONFIG_NO_HZ=y
-@@ -105,7 +122,12 @@
- CONFIG_OPLUS_FEATURE_UID_PERF=y
- #endif
- 
--CONFIG_MODULES=y
-+# Match XTD's fully monolithic build: disabling module support forces
-+# every remaining tristate driver to built-in (or off) kernel-wide,
-+# automatically. Simpler and more complete than flipping each driver's
-+# config individually — also removes any m/y dependency-capping risk
-+# (e.g. USB_GSPCA on VIDEO_V4L2) since 'm' is no longer a valid state.
-+# CONFIG_MODULES is not set
- CONFIG_MODULE_UNLOAD=y
- CONFIG_MODVERSIONS=y
- CONFIG_MODULE_SIG=y
 diff --git a/drivers/staging/Makefile b/drivers/staging/Makefile
 index da6d9ada..f5be438d 100644
 --- a/drivers/staging/Makefile
