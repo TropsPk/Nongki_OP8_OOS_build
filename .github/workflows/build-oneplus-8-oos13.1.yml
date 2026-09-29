@@ -73,6 +73,18 @@ env:
   # modules_and_devicetree into kernel/msm-4.19/drivers/staging/. Set to "false" to skip.
   MERGE_WLAN: "true"
 
+  # Merge Qualcomm's audio driver (vendor/qcom/opensource/audio-kernel) into
+  # kernel/msm-4.19/techpack/audio, plus OnePlus's audio extras from
+  # vendor/oplus/kernel_4.19/audio (audio_extend driver -> techpack/audio-extend,
+  # tfa98xx-v6 + smartpa_pm codecs -> techpack/audio/asoc/codecs). Built in (monolithic).
+  # Set to "false" to skip.
+  MERGE_AUDIO: "true"
+
+  # Merge Qualcomm's data-kernel rmnet perf/shs drivers (vendor/qcom/opensource/data-kernel)
+  # into kernel/msm-4.19/techpack/data. Built in (monolithic). Runs after MERGE_AUDIO.
+  # Set to "false" to skip.
+  MERGE_DATA: "true"
+
   # OOS device tree compiles directly (non-overlay), generated via OnePlus's official Makefile
   GENERATE_DTB: "false"
   GENERATE_CHIP: "qcom"
@@ -124,6 +136,14 @@ jobs:
       - name: 📶 Merge WLAN driver (qcacld-3.0)
         if: env.MERGE_WLAN == 'true'
         uses: ./.github/workflows/merge-wlan
+
+      - name: 🔊 Merge audio driver (audio-kernel + OnePlus extras)
+        if: env.MERGE_AUDIO == 'true'
+        uses: ./.github/workflows/merge-audio
+
+      - name: 📡 Merge data driver (rmnet perf/shs)
+        if: env.MERGE_DATA == 'true'
+        uses: ./.github/workflows/merge-data
 
       - name: 🩹 Apply kernel fixes
         if: env.MERGE_WLAN == 'true'
@@ -332,6 +352,46 @@ jobs:
           PY
           else
             echo "[-] $SRC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+      - name: 🩹 Fix audio_extend_drv.c (printk format arguments)
+        if: env.MERGE_AUDIO == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          # OnePlus's audio_extend_drv.c (vendor/oplus/kernel_4.19/audio/driver) has two
+          # printk format bugs. Its Kbuild compiles with -Werror, so both are hard errors
+          # in a kernel build (-Wformat / -Wformat-extra-args):
+          #   1) pr_warn("%s: Invalid number of codecs, ret=%d\n",
+          #              __func__, dev->of_node->full_name, ret);
+          #      -> three arguments for two conversions; "%d" is fed the node name string.
+          #      The node name is clearly meant to be logged, so add a "%s" for it.
+          #   2) pr_info("%s: i2s_id=%d, size=%d!\n", __func__, i2s_id, size);
+          #      -> "size" is a size_t, so "%d" -> "%zu".
+          SRC="kernel/msm-4.19/techpack/audio-extend/audio_extend_drv.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q 'Invalid number of codecs, ret=%d' "$SRC"; then
+              sed -i 's/Invalid number of codecs, ret=%d/Invalid number of codecs in %s, ret=%d/' "$SRC"
+              echo "[+] audio_extend_drv.c: pr_warn format now consumes the node name argument."
+            elif grep -q 'Invalid number of codecs in %s, ret=%d' "$SRC"; then
+              echo "[+] audio_extend_drv.c: pr_warn already patched, skipping."
+            else
+              echo "[-] audio_extend_drv.c: 'Invalid number of codecs' message not found in expected form."
+              false
+            fi
+
+            if grep -q 'i2s_id=%d, size=%d!' "$SRC"; then
+              sed -i 's/i2s_id=%d, size=%d!/i2s_id=%d, size=%zu!/' "$SRC"
+              echo "[+] audio_extend_drv.c: size_t argument now printed with %zu."
+            elif grep -q 'i2s_id=%d, size=%zu!' "$SRC"; then
+              echo "[+] audio_extend_drv.c: pr_info already patched, skipping."
+            else
+              echo "[-] audio_extend_drv.c: i2s_id/size message not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — did the audio merge step run before this one?"
             false
           fi
 

@@ -1,0 +1,100 @@
+name: 'Merge Qualcomm/OnePlus audio driver into the kernel tree.'
+
+runs:
+  using: 'composite'
+  steps:
+      - name: Merge audio driver
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "::group::[+] Fetching vendor audio sources (sparse)..."
+          # Sparse partial-clone: pulls only the two audio trees from modules_and_devicetree:
+          #   vendor/qcom/opensource/audio-kernel   -> QC audio (soc/dsp/ipc/asoc + config/)
+          #   vendor/oplus/kernel_4.19/audio        -> OnePlus audio extras (audio_extend driver,
+          #                                            tfa98xx-v6 + smartpa_pm codecs)
+          git clone --depth=1 --filter=blob:none --sparse "${{ env.VENDOR_SOURCE }}" -b "${{ env.VENDOR_BRANCH }}" oos_audio_tmp
+          cd oos_audio_tmp
+          git sparse-checkout set vendor/qcom/opensource/audio-kernel vendor/oplus/kernel_4.19/audio
+          cd ..
+
+          QC_SRC="oos_audio_tmp/vendor/qcom/opensource/audio-kernel"
+          OPLUS_SRC="oos_audio_tmp/vendor/oplus/kernel_4.19/audio"
+          TP="kernel/msm-4.19/techpack"
+
+          for d in "$QC_SRC" "$OPLUS_SRC"; do
+            if [ ! -d "$d" ]; then
+              echo "[-] $d not found in modules_and_devicetree."
+              false
+            fi
+          done
+
+          # 1) QC audio -> techpack/audio.
+          # techpack/Kbuild auto-adds every directory under techpack/ to obj-y, and
+          # audio-kernel/Makefile already expects to live at $(srctree)/techpack/audio
+          # (it includes techpack/audio/config/konaauto.conf and konaautoconf.h by that path).
+          rm -rf "$TP/audio"
+          cp -a "$QC_SRC" "$TP/audio"
+          for f in Makefile config/konaauto.conf config/konaautoconf.h asoc/codecs/Kbuild; do
+            if [ ! -f "$TP/audio/$f" ]; then
+              echo "[-] techpack/audio/$f missing after merge."
+              false
+            fi
+          done
+          echo "[+] techpack/audio merged."
+
+          # 2) Monolithic build. OEM konaauto.conf exports every audio config as =m (external
+          # *_dlkm modules). This kernel is built with CONFIG_MODULES disabled, where obj-m
+          # objects are never compiled — every audio driver would be silently skipped. Switch
+          # the exports to =y so they build into the kernel (konaautoconf.h already defines
+          # them as built-in "1"). Comment lines (#export ...) are left untouched.
+          CONF="$TP/audio/config/konaauto.conf"
+          BEFORE=$(grep -cE '^export [A-Za-z0-9_]+=m$' "$CONF")
+          sed -i -E 's/^(export [A-Za-z0-9_]+)=m$/\1=y/' "$CONF"
+          if grep -E '^[^#]*=m[[:space:]]*$' "$CONF"; then
+            echo "[-] konaauto.conf still has =m entries after conversion."
+            false
+          fi
+          echo "[+] konaauto.conf: $BEFORE exports switched =m -> =y."
+
+          # 3) OnePlus audio_extend driver -> techpack/audio-extend (own top-level techpack dir,
+          # picked up by techpack/Kbuild). Its Kbuild builds with obj-m; make it built-in.
+          rm -rf "$TP/audio-extend"
+          mkdir -p "$TP/audio-extend"
+          cp -a "$OPLUS_SRC/driver/audio_extend_drv.c" "$OPLUS_SRC/driver/Kbuild" "$TP/audio-extend/"
+          sed -i 's/^obj-m += audio_extend_dlkm.o$/obj-y += audio_extend_dlkm.o/' "$TP/audio-extend/Kbuild"
+          if ! grep -q '^obj-y += audio_extend_dlkm.o$' "$TP/audio-extend/Kbuild"; then
+            echo "[-] techpack/audio-extend/Kbuild: obj-m -> obj-y rewrite did not apply."
+            false
+          fi
+          echo "[+] techpack/audio-extend merged (built-in)."
+
+          # 4) OnePlus codecs enabled for kona by konaauto.conf (CONFIG_SND_SOC_TFA98XX,
+          # OPLUS_FEATURE_SMARTPA_PM): tfa98xx-v6 and smartpa_pm. tfa98xx-v6/Kbuild pulls in
+          # ../smartpa_pm/smartpa_pm.o, so both must sit side by side in asoc/codecs/.
+          for c in tfa98xx-v6 smartpa_pm; do
+            if [ -d "$OPLUS_SRC/codecs/$c" ]; then
+              rm -rf "$TP/audio/asoc/codecs/$c"
+              cp -a "$OPLUS_SRC/codecs/$c" "$TP/audio/asoc/codecs/$c"
+              echo "[+] asoc/codecs/$c merged."
+            else
+              echo "[-] $c not found under vendor/oplus/kernel_4.19/audio/codecs."
+              false
+            fi
+          done
+
+          # OEM asoc/codecs/Kbuild only descends into the QC codec dirs; hook tfa98xx-v6 in
+          # right after sdm660_cdc/ (inside the KERNEL_BUILD == 1 block).
+          CODECS_KBUILD="$TP/audio/asoc/codecs/Kbuild"
+          if ! grep -q 'tfa98xx-v6/' "$CODECS_KBUILD"; then
+            sed -i '/^\tobj-y\t+= sdm660_cdc\/$/a #ifdef OPLUS_ARCH_EXTENDS\nifdef CONFIG_SND_SOC_TFA98XX\n\tobj-y\t+= tfa98xx-v6/\nendif\n#endif' "$CODECS_KBUILD"
+          fi
+          if ! grep -qP '^\tobj-y\t\+= tfa98xx-v6/$' "$CODECS_KBUILD"; then
+            echo "[-] asoc/codecs/Kbuild: tfa98xx-v6 hook did not apply (sdm660_cdc anchor missing?)."
+            false
+          fi
+          echo "[+] asoc/codecs/Kbuild: tfa98xx-v6 hooked in."
+
+          echo "[i] Not merged (not referenced by the kona build): codecs/max989xx, ak4376, aw87xxx, sia81xx."
+
+          rm -rf oos_audio_tmp
+          echo "::endgroup::"

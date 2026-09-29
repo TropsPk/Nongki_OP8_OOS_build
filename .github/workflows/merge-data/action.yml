@@ -1,0 +1,65 @@
+name: 'Merge Qualcomm data-kernel (rmnet perf/shs) into the kernel tree.'
+
+runs:
+  using: 'composite'
+  steps:
+      - name: Merge data driver
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "::group::[+] Fetching vendor/qcom/opensource/data-kernel (sparse)..."
+          # Sparse partial-clone: pulls only data-kernel from modules_and_devicetree.
+          git clone --depth=1 --filter=blob:none --sparse "${{ env.VENDOR_SOURCE }}" -b "${{ env.VENDOR_BRANCH }}" oos_data_tmp
+          cd oos_data_tmp
+          git sparse-checkout set vendor/qcom/opensource/data-kernel
+          cd ..
+
+          DATA_SRC="oos_data_tmp/vendor/qcom/opensource/data-kernel"
+          TP="kernel/msm-4.19/techpack"
+          if [ ! -d "$DATA_SRC/drivers/rmnet" ]; then
+            echo "[-] data-kernel/drivers/rmnet not found in modules_and_devicetree."
+            false
+          fi
+
+          # 1) data-kernel -> techpack/data (techpack/Kbuild auto-adds every techpack/ subdir).
+          rm -rf "$TP/data"
+          cp -a "$DATA_SRC" "$TP/data"
+          echo "[+] techpack/data merged."
+
+          # 2) In-tree glue. data-kernel is laid out for the Android external-module build
+          # (Android.mk only, no top-level Makefile), so techpack/data, drivers/ and
+          # drivers/rmnet/ have no kbuild files to descend through. perf/ and shs/ already
+          # ship a Kbuild (kbuild prefers it over their external-module Makefile).
+          # Only rmnet perf/shs are built; emac-dwc-eqos (ethernet MAC) is not used on
+          # this device and is left out.
+          printf 'obj-y += drivers/\n'          > "$TP/data/Makefile"
+          printf 'obj-y += rmnet/\n'            > "$TP/data/drivers/Makefile"
+          printf 'obj-y += perf/\nobj-y += shs/\n' > "$TP/data/drivers/rmnet/Makefile"
+
+          # 3) Monolithic build: OEM Kbuilds use obj-m, which is never compiled with
+          # CONFIG_MODULES disabled (silently skipped). Key them on their Kconfig symbols.
+          sed -i 's/^obj-m += rmnet_perf.o$/obj-$(CONFIG_RMNET_PERF) += rmnet_perf.o/' "$TP/data/drivers/rmnet/perf/Kbuild"
+          sed -i 's/^obj-m += rmnet_shs.o$/obj-$(CONFIG_RMNET_SHS) += rmnet_shs.o/' "$TP/data/drivers/rmnet/shs/Kbuild"
+          grep -q '^obj-$(CONFIG_RMNET_PERF) += rmnet_perf.o$' "$TP/data/drivers/rmnet/perf/Kbuild" || { echo "[-] rmnet perf Kbuild rewrite did not apply."; false; }
+          grep -q '^obj-$(CONFIG_RMNET_SHS) += rmnet_shs.o$'   "$TP/data/drivers/rmnet/shs/Kbuild"  || { echo "[-] rmnet shs Kbuild rewrite did not apply."; false; }
+          echo "[+] rmnet perf/shs Kbuild keyed on CONFIG_RMNET_PERF / CONFIG_RMNET_SHS."
+
+          # 4) Kconfig. RMNET_PERF / RMNET_SHS are declared in the data-kernel Kconfig files,
+          # but nothing in the OEM kernel sources them, so a defconfig entry for them would be
+          # dropped as an unknown symbol. Chain them in and hook into drivers/Kconfig.
+          printf 'source "techpack/data/drivers/rmnet/perf/Kconfig"\nsource "techpack/data/drivers/rmnet/shs/Kconfig"\n' > "$TP/data/drivers/rmnet/Kconfig"
+          printf 'menu "RmNet extensions"\n\nsource "techpack/data/drivers/rmnet/Kconfig"\n\nendmenu\n' > "$TP/data/drivers/Kconfig"
+
+          DRV_KCONFIG="kernel/msm-4.19/drivers/Kconfig"
+          if ! grep -q 'techpack/data/drivers/Kconfig' "$DRV_KCONFIG"; then
+            if [ "$(tail -n 1 "$DRV_KCONFIG")" != "endmenu" ]; then
+              echo "[-] drivers/Kconfig does not end with 'endmenu'; cannot hook techpack/data."
+              false
+            fi
+            sed -i '$i source "techpack/data/drivers/Kconfig"' "$DRV_KCONFIG"
+          fi
+          grep -q '^source "techpack/data/drivers/Kconfig"$' "$DRV_KCONFIG" || { echo "[-] drivers/Kconfig hook did not apply."; false; }
+          echo "[+] drivers/Kconfig sources techpack/data/drivers/Kconfig."
+
+          rm -rf oos_data_tmp
+          echo "::endgroup::"
