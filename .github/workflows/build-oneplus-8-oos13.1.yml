@@ -355,6 +355,46 @@ jobs:
             false
           fi
 
+      - name: 🩹 Fix qcacld-3.0 wlan_hdd_stats.c (MIB stats debugfs guard)
+        if: env.MERGE_WLAN == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          # Link error with the qca6390 profile:
+          #   wlan_hdd_stats.o: In function `wlan_hdd_get_mib_stats':
+          #   undefined reference to `hdd_debugfs_process_mib_stats'
+          # qca6390_defconfig sets CONFIG_WLAN_FEATURE_MIB_STATS := y unconditionally, but
+          # the MIB stats code is only compiled with CONFIG_WLAN_DEBUGFS, which the profile
+          # enables only if the kernel has CONFIG_DEBUG_FS. The user-build debugfs.config
+          # merge turns CONFIG_DEBUG_FS off, so wlan_hdd_debugfs_mibstat.o is skipped and
+          # the header (wlan_hdd_debugfs_mibstat.h) hides the prototype without providing a
+          # no-op stub. wlan_hdd_get_mib_stats() calls it guarded by WLAN_FEATURE_MIB_STATS
+          # only, so the call is an implicit declaration (silenced by our
+          # -Wno-implicit-function-declaration) that fails at vmlinux link time.
+          # Upstream's default profile avoids this by forcing MIB_STATS := n without
+          # DEBUGFS. ppajda (XTD) and HELLBOY017 guard the call with WLAN_DEBUGFS; do the same.
+          SRC="kernel/msm-4.19/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_stats.c"
+
+          if [ -f "$SRC" ]; then
+            python3 - "$SRC" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          old = "\thdd_debugfs_process_mib_stats(adapter, stats);\n"
+          new = "#ifdef WLAN_DEBUGFS\n" + old + "#endif\n"
+          if new in s:
+              print("[+] wlan_hdd_stats.c: hdd_debugfs_process_mib_stats() call already guarded, skipping.")
+          elif s.count(old) == 1:
+              open(p, "w").write(s.replace(old, new))
+              print("[+] wlan_hdd_stats.c: hdd_debugfs_process_mib_stats() call wrapped in #ifdef WLAN_DEBUGFS.")
+          else:
+              print("[-] wlan_hdd_stats.c: hdd_debugfs_process_mib_stats() call not found in expected form.")
+              sys.exit(1)
+          PY
+          else
+            echo "[-] $SRC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
       - name: 🩹 Fix audio_extend_drv.c (printk format arguments)
         if: env.MERGE_AUDIO == 'true'
         run: |
