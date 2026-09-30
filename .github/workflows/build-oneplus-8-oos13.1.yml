@@ -395,6 +395,66 @@ jobs:
             false
           fi
 
+      - name: 🩹 Fix tfa98xx_v6.c (variable length array)
+        if: env.MERGE_AUDIO == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          # OnePlus's kernel_debug_read() (asoc/codecs/tfa98xx-v6/tfa98xx_v6.c) sizes a stack
+          # buffer with a "const int size = 1024;" variable:
+          #   char buffer[size];
+          # In C a const int is not a constant expression, so this is a variable length array:
+          #   error: variable length arrays are a C99 feature [-Werror,-Wvla-extension]
+          # (tfa98xx-v6/Kbuild compiles with -Werror, and the kernel builds as gnu89).
+          # ppajda / XTD carry this as "char buffer[1024];". "size" stays defined and is still
+          # used by the scnprintf() calls below it.
+          SRC="kernel/msm-4.19/techpack/audio/asoc/codecs/tfa98xx-v6/tfa98xx_v6.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q '^[[:space:]]*char buffer\[size\];' "$SRC"; then
+              sed -i 's/^\([[:space:]]*\)char buffer\[size\];/\1char buffer[1024];/' "$SRC"
+              echo "[+] tfa98xx_v6.c: char buffer[size] -> char buffer[1024]."
+            elif grep -q '^[[:space:]]*char buffer\[1024\];' "$SRC"; then
+              echo "[+] tfa98xx_v6.c: already patched, skipping."
+            else
+              echo "[-] tfa98xx_v6.c: 'char buffer[size];' not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — did the audio merge step run before this one?"
+            false
+          fi
+
+      - name: 🩹 Fix q6afe.c (smartpa_pm functions must not be static)
+        if: env.MERGE_AUDIO == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          # OnePlus's dsp/q6afe.c defines set_smartpa_pm_status_apr() and
+          # get_smartpa_pm_result_apr() as "static int" followed by EXPORT_SYMBOL(). They are
+          # called from a different file (asoc/codecs/smartpa_pm/smartpa_pm.c, via extern
+          # declarations). With CONFIG_MODULES disabled EXPORT_SYMBOL() expands to nothing,
+          # so two things break:
+          #   q6afe.c: error: unused function 'set_smartpa_pm_status_apr' [-Werror,-Wunused-function]
+          #   link:    smartpa_pm.o -> undefined reference (the symbols are file-local)
+          # ppajda / XTD define both as plain "int" (non-static). Do the same.
+          SRC="kernel/msm-4.19/techpack/audio/dsp/q6afe.c"
+
+          if [ -f "$SRC" ]; then
+            for fn in set_smartpa_pm_status_apr get_smartpa_pm_result_apr; do
+              if grep -q "^static int $fn(void \*buf, int cmd_size)" "$SRC"; then
+                sed -i "s/^static int $fn(void \*buf, int cmd_size)/int $fn(void *buf, int cmd_size)/" "$SRC"
+                echo "[+] q6afe.c: $fn is no longer static."
+              elif grep -q "^int $fn(void \*buf, int cmd_size)" "$SRC"; then
+                echo "[+] q6afe.c: $fn already non-static, skipping."
+              else
+                echo "[-] q6afe.c: definition of $fn not found in expected form."
+                false
+              fi
+            done
+          else
+            echo "[-] $SRC not found — did the audio merge step run before this one?"
+            false
+          fi
+
       - name: 🩹 Fix modpost section mismatch (oplus_project.c)
         run: |
           cd $GITHUB_WORKSPACE
