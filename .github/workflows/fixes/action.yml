@@ -1,0 +1,558 @@
+name: 'Apply all source fixes to the merged OOS kernel tree.'
+description: 'Source-level fixes for the merged OOS kernel, WLAN, audio and vendor trees.'
+
+# Runs after the merge-* actions and the vendor/devicetree layout check.
+# Every step is idempotent and fails the job if its anchor text is not found.
+
+# FIX INDEX - each step name starts with its ID, so grep the ID (e.g. WLAN-3) to jump to it.
+# Paths: WLAN / AUDIO / TREE are under kernel/msm-4.19; MODPOST paths are under the workspace root.
+# Gate: WLAN needs MERGE_WLAN, AUDIO needs MERGE_AUDIO, MODPOST / TREE always run.
+#
+# WLAN-1    drivers/staging/qcacld-3.0/core/mac/src/include/parser_api.h
+#           populate_mdie() array bound differs from its definition (clang -Werror) -> header bound = SIR_MDIE_SIZE
+# WLAN-2    drivers/staging/qcacld-3.0/Kconfig
+#           CONFIG_QCA_CLD_WLAN_PROFILE was never defined, so "qca6390" was silently dropped -> define the string symbol
+# WLAN-3    drivers/staging/qcacld-3.0/Kbuild
+#           quoted profile path, TARGET_BUILD_VARIANT unset (debug features on), BUILD_TAG shells out to git -> strip quotes, set user, BUILD_TAG off
+# WLAN-4    drivers/staging/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c
+#           IPA_TCL_DATA_RING_IDX undeclared without IPA_OFFLOAD -> wrap the check in #ifdef IPA_OFFLOAD
+# WLAN-5    drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_sysfs.c
+#           hdd_sysfs_{create,destroy}_driver_root_obj undefined at link (inside WLAN_POWER_DEBUG) -> close that #ifdef before them
+# WLAN-6    drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_stats.c
+#           hdd_debugfs_process_mib_stats undefined at link (CONFIG_DEBUG_FS is off) -> guard the call with #ifdef WLAN_DEBUGFS
+# AUDIO-1   techpack/audio-extend/audio_extend_drv.c
+#           two printk format bugs (-Werror) -> add the missing %s, print size_t with %zu
+# AUDIO-2   techpack/audio/asoc/codecs/tfa98xx-v6/tfa98xx_v6.c
+#           variable length array (-Wvla-extension, -Werror) -> char buffer[1024]
+# AUDIO-3   techpack/audio/asoc/codecs/tfa98xx-v6/{tfa98xx_v6.c,tfa_dsp_v6.c}
+#           global ftm_mode collides with wil6210 in the monolithic vmlinux -> rename to tfa_ftm_mode
+# AUDIO-4   techpack/audio/dsp/q6afe.c
+#           smartpa_pm functions are static but called from another file -> make them non-static
+# MODPOST-1 vendor/oplus/kernel/system/oplus_project/qcom/oplus_project.c
+#           section mismatch: helpers read __initdata boot_command_line -> mark the helpers __init
+# MODPOST-2 vendor/oplus/kernel/system/oplus_phoenix/phoenix_reboot_speed.c
+#           section mismatch: persistent table points at __init_or_module callbacks -> drop __init_or_module
+# TREE-1    every Kconfig* file (also through the vendor symlinks)
+#           CRLF line endings flood the log with "unsupported character" -> convert to LF
+# TREE-2    drivers/soc/oplus/system/last_boot_reason/Makefile
+#           hardcoded obj-m always builds a .ko in a monolithic build -> obj-y (built in)
+
+runs:
+  using: 'composite'
+  steps:
+      # ---- WLAN-1..6  qcacld-3.0 (MERGE_WLAN) ----
+      - name: "🩹 [WLAN-1] parser_api.h: populate_mdie() bound"
+        if: env.MERGE_WLAN == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          echo "::group::[+] Patching qcacld-3.0 populate_mdie() prototype..."
+          # Stock qcacld-3.0 (as released by OnePlusOSS) declares populate_mdie()
+          # with an unbounded array parameter in the header:
+          #   void populate_mdie(..., uint8_t mdie[]);              (parser_api.h)
+          # but defines it with a bounded array matching SIR_MDIE_SIZE (3):
+          #   void populate_mdie(..., uint8_t mdie[SIR_MDIE_SIZE])  (parser_api.c)
+          # clang 15+ flags this declaration/definition mismatch via
+          # -Warray-parameter, which our -Werror promotes to a hard build error:
+          #   error: argument 'mdie' of type 'uint8_t[3]' with mismatched bound
+          # Same fix XTD kernels ship: make the header bound match the definition.
+          HDR="kernel/msm-4.19/drivers/staging/qcacld-3.0/core/mac/src/include/parser_api.h"
+
+          if [ -f "$HDR" ]; then
+            if grep -q "uint8_t mdie\[\]);" "$HDR"; then
+              sed -i 's/uint8_t mdie\[\]);/uint8_t mdie[SIR_MDIE_SIZE]);/' "$HDR"
+              echo "[+] parser_api.h: populate_mdie() bound fixed to SIR_MDIE_SIZE."
+            elif grep -q "uint8_t mdie\[SIR_MDIE_SIZE\]);" "$HDR"; then
+              echo "[+] parser_api.h: populate_mdie() already patched, skipping."
+            else
+              echo "[-] parser_api.h: populate_mdie() prototype not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $HDR not found — was the WLAN driver merged before this step?"
+            false
+          fi
+          echo "::endgroup::"
+
+      - name: "🩹 [WLAN-2] qcacld Kconfig: WLAN profile symbol"
+        if: env.MERGE_WLAN == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # defconfig_oos.patch sets CONFIG_QCA_CLD_WLAN_PROFILE="qca6390", but stock
+          # qcacld-3.0/Kconfig never defines that symbol. Kconfig silently drops
+          # unknown symbols from a defconfig, so .config never gets the line and Kbuild
+          # falls back to WLAN_PROFILE := default — i.e. the wrong chip profile
+          # (the qca6390 datapath, dp/wifi3.0 + hal/wifi3.0, was never compiled).
+          # Define it as a real string symbol so qca6390 survives into .config.
+          KC="kernel/msm-4.19/drivers/staging/qcacld-3.0/Kconfig"
+
+          if [ -f "$KC" ]; then
+            if grep -q "^config QCA_CLD_WLAN_PROFILE$" "$KC"; then
+              echo "[+] qcacld Kconfig: QCA_CLD_WLAN_PROFILE already defined, skipping."
+            elif grep -q "^if QCA_CLD_WLAN != n$" "$KC"; then
+              printf '\nconfig QCA_CLD_WLAN_PROFILE\n\tstring "Qualcomm Atheros CLD WLAN build profile"\n\tdefault "default"\n\thelp\n\t  Name of the configs/<profile>_defconfig that Kbuild includes\n\t  (for example qca6390).\n' > /tmp/qca_profile_sym.kconfig
+              sed -i '/^if QCA_CLD_WLAN != n$/r /tmp/qca_profile_sym.kconfig' "$KC"
+              rm -f /tmp/qca_profile_sym.kconfig
+              echo "[+] qcacld Kconfig: added QCA_CLD_WLAN_PROFILE string symbol."
+            else
+              echo "[-] qcacld Kconfig: 'if QCA_CLD_WLAN != n' anchor not found."
+              false
+            fi
+          else
+            echo "[-] $KC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+      - name: "🩹 [WLAN-3] qcacld Kbuild: profile quotes, build variant, BUILD_TAG"
+        if: env.MERGE_WLAN == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          KB="kernel/msm-4.19/drivers/staging/qcacld-3.0/Kbuild"
+
+          if [ ! -f "$KB" ]; then
+            echo "[-] $KB not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+          # 1) Quotes: once the profile is a Kconfig string symbol, Kconfig writes it as
+          #    CONFIG_QCA_CLD_WLAN_PROFILE="qca6390" (quotes included), so the stock
+          #      include $(WLAN_ROOT)/configs/$(CONFIG_QCA_CLD_WLAN_PROFILE)_defconfig
+          #    looks for configs/"qca6390"_defconfig. Strip the quotes in the include.
+          if grep -q '^include $(WLAN_ROOT)/configs/$(CONFIG_QCA_CLD_WLAN_PROFILE)_defconfig$' "$KB"; then
+            sed -i 's|^include $(WLAN_ROOT)/configs/$(CONFIG_QCA_CLD_WLAN_PROFILE)_defconfig$|include $(WLAN_ROOT)/configs/$(subst ",,$(CONFIG_QCA_CLD_WLAN_PROFILE))_defconfig|' "$KB"
+            echo "[+] Kbuild: profile include now strips quotes."
+          elif grep -q '^include $(WLAN_ROOT)/configs/$(subst ",,$(CONFIG_QCA_CLD_WLAN_PROFILE))_defconfig$' "$KB"; then
+            echo "[+] Kbuild: profile include already strips quotes, skipping."
+          else
+            echo "[-] Kbuild: profile include not found in expected form."
+            false
+          fi
+
+          # 2) TARGET_BUILD_VARIANT := user, set before the profile include. The profile
+          #    files gate debug features on "ifneq ($(TARGET_BUILD_VARIANT),user)"
+          #    (CRASH_INJECT, DESC_DUP_DETECT_DEBUG, DEBUG_RX_RING_BUFFER, PKTLOG, ...);
+          #    nothing in this build sets it, so a release kernel got the debug set.
+          if grep -q '^TARGET_BUILD_VARIANT := user$' "$KB"; then
+            echo "[+] Kbuild: TARGET_BUILD_VARIANT already set, skipping."
+          else
+            sed -i '/^include $(WLAN_ROOT)\/configs\//i TARGET_BUILD_VARIANT := user' "$KB"
+            echo "[+] Kbuild: TARGET_BUILD_VARIANT := user."
+          fi
+
+          # 3) BUILD_TAG off, set after the profile include (the profile enables
+          #    CONFIG_BUILD_TAG := y). With it on, Kbuild shells out to git reflog/log
+          #    inside the driver dir — which is not a git repo here, hence the
+          #    "fatal: ambiguous argument '<sha>~..HEAD'" noise — and stamps the current
+          #    time into wlan_hdd_main.o, defeating ccache for that object every build.
+          if grep -q '^CONFIG_BUILD_TAG := n$' "$KB"; then
+            echo "[+] Kbuild: BUILD_TAG already disabled, skipping."
+          else
+            sed -i '/^include $(WLAN_ROOT)\/configs\//a CONFIG_BUILD_TAG := n' "$KB"
+            echo "[+] Kbuild: CONFIG_BUILD_TAG := n."
+          fi
+
+          # Verify the end state, in order.
+          grep -n -A1 -B1 '^include $(WLAN_ROOT)/configs/' "$KB"
+          grep -q '^TARGET_BUILD_VARIANT := user$' "$KB"
+          grep -q '^CONFIG_BUILD_TAG := n$' "$KB"
+
+      - name: "🩹 [WLAN-4] dp_main.c: IPA_OFFLOAD guard"
+        if: env.MERGE_WLAN == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # dp_runtime_suspend() in qca-wifi-host-cmn/dp/wifi3.0/dp_main.c uses
+          # IPA_TCL_DATA_RING_IDX unguarded, but dp_ipa.h only defines it inside
+          # "#ifdef IPA_OFFLOAD". With the qca6390 profile IPA_OFFLOAD is off here
+          # (CONFIG_IPA3 := n, no ENABLE_IPA), so the identifier is undeclared:
+          #   error: use of undeclared identifier 'IPA_TCL_DATA_RING_IDX'
+          # Wrap the check in the same #ifdef the macro lives under.
+          SRC="kernel/msm-4.19/drivers/staging/qca-wifi-host-cmn/dp/wifi3.0/dp_main.c"
+
+          if [ -f "$SRC" ]; then
+            python3 - "$SRC" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          old = "\t\t\tif (i == IPA_TCL_DATA_RING_IDX)\n\t\t\t\tcontinue;\n"
+          new = "#ifdef IPA_OFFLOAD\n" + old + "#endif\n"
+          if new in s:
+              print("[+] dp_main.c: IPA_TCL_DATA_RING_IDX check already guarded, skipping.")
+          elif s.count(old) == 1:
+              open(p, "w").write(s.replace(old, new))
+              print("[+] dp_main.c: IPA_TCL_DATA_RING_IDX check wrapped in #ifdef IPA_OFFLOAD.")
+          else:
+              print("[-] dp_main.c: IPA_TCL_DATA_RING_IDX check not found in expected form.")
+              sys.exit(1)
+          PY
+          else
+            echo "[-] $SRC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+      - name: "🩹 [WLAN-5] wlan_hdd_sysfs.c: driver root obj guard"
+        if: env.MERGE_WLAN == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # Link error with the qca6390 profile:
+          #   undefined reference to `hdd_sysfs_create_driver_root_obj'
+          #   undefined reference to `hdd_sysfs_destroy_driver_root_obj'
+          # wlan_hdd_sysfs.h declares both for plain WLAN_SYSFS (only the powerstats
+          # pair is gated on WLAN_POWER_DEBUG), but wlan_hdd_sysfs.c defines them
+          # inside its "#ifdef WLAN_POWER_DEBUG" block. Upstream's default profile
+          # turns on both flags, so it never showed; qca6390 sets WLAN_SYSFS only
+          # (WLAN_POWER_DEBUG lives in default_defconfig alone). It was hidden
+          # until the profile was wired properly (it used to fall back to default).
+          # Close the WLAN_POWER_DEBUG block after the powerstats functions so the
+          # root-obj helpers are defined whenever WLAN_SYSFS is.
+          SRC="kernel/msm-4.19/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_sysfs.c"
+
+          if [ -f "$SRC" ]; then
+            python3 - "$SRC" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+
+          a_old = ("\tsysfs_remove_file(driver_kobject, &power_stats_attribute.attr);\n"
+                   "}\n"
+                   "\n"
+                   "void hdd_sysfs_create_driver_root_obj(void)\n")
+          a_new = ("\tsysfs_remove_file(driver_kobject, &power_stats_attribute.attr);\n"
+                   "}\n"
+                   "#endif /* WLAN_POWER_DEBUG */\n"
+                   "\n"
+                   "void hdd_sysfs_create_driver_root_obj(void)\n")
+
+          b_old = ("\tif (driver_kobject) {\n"
+                   "\t\tkobject_put(driver_kobject);\n"
+                   "\t\tdriver_kobject = NULL;\n"
+                   "\t}\n"
+                   "}\n"
+                   "#endif\n"
+                   "\n"
+                   "#ifdef WLAN_FEATURE_BEACON_RECEPTION_STATS\n")
+          b_new = ("\tif (driver_kobject) {\n"
+                   "\t\tkobject_put(driver_kobject);\n"
+                   "\t\tdriver_kobject = NULL;\n"
+                   "\t}\n"
+                   "}\n"
+                   "\n"
+                   "#ifdef WLAN_FEATURE_BEACON_RECEPTION_STATS\n")
+
+          if a_new in s and b_new in s:
+              print("[+] wlan_hdd_sysfs.c: driver root obj already outside WLAN_POWER_DEBUG, skipping.")
+          elif s.count(a_old) == 1 and s.count(b_old) == 1:
+              open(p, "w").write(s.replace(a_old, a_new).replace(b_old, b_new))
+              print("[+] wlan_hdd_sysfs.c: moved driver root obj helpers out of WLAN_POWER_DEBUG.")
+          else:
+              print("[-] wlan_hdd_sysfs.c: expected anchors not found (a=%d b=%d)." % (s.count(a_old), s.count(b_old)))
+              sys.exit(1)
+          PY
+          else
+            echo "[-] $SRC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+      - name: "🩹 [WLAN-6] wlan_hdd_stats.c: MIB stats debugfs guard"
+        if: env.MERGE_WLAN == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # Link error with the qca6390 profile:
+          #   wlan_hdd_stats.o: In function `wlan_hdd_get_mib_stats':
+          #   undefined reference to `hdd_debugfs_process_mib_stats'
+          # qca6390_defconfig sets CONFIG_WLAN_FEATURE_MIB_STATS := y unconditionally, but
+          # the MIB stats code is only compiled with CONFIG_WLAN_DEBUGFS, which the profile
+          # enables only if the kernel has CONFIG_DEBUG_FS. The user-build debugfs.config
+          # merge turns CONFIG_DEBUG_FS off, so wlan_hdd_debugfs_mibstat.o is skipped and
+          # the header (wlan_hdd_debugfs_mibstat.h) hides the prototype without providing a
+          # no-op stub. wlan_hdd_get_mib_stats() calls it guarded by WLAN_FEATURE_MIB_STATS
+          # only, so the call is an implicit declaration (silenced by our
+          # -Wno-implicit-function-declaration) that fails at vmlinux link time.
+          # Upstream's default profile avoids this by forcing MIB_STATS := n without
+          # DEBUGFS. ppajda (XTD) and HELLBOY017 guard the call with WLAN_DEBUGFS; do the same.
+          SRC="kernel/msm-4.19/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_stats.c"
+
+          if [ -f "$SRC" ]; then
+            python3 - "$SRC" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          old = "\thdd_debugfs_process_mib_stats(adapter, stats);\n"
+          new = "#ifdef WLAN_DEBUGFS\n" + old + "#endif\n"
+          if new in s:
+              print("[+] wlan_hdd_stats.c: hdd_debugfs_process_mib_stats() call already guarded, skipping.")
+          elif s.count(old) == 1:
+              open(p, "w").write(s.replace(old, new))
+              print("[+] wlan_hdd_stats.c: hdd_debugfs_process_mib_stats() call wrapped in #ifdef WLAN_DEBUGFS.")
+          else:
+              print("[-] wlan_hdd_stats.c: hdd_debugfs_process_mib_stats() call not found in expected form.")
+              sys.exit(1)
+          PY
+          else
+            echo "[-] $SRC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+      # ---- AUDIO-1..4  techpack/audio (MERGE_AUDIO) ----
+      - name: "🩹 [AUDIO-1] audio_extend_drv.c: printk formats"
+        if: env.MERGE_AUDIO == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # OnePlus's audio_extend_drv.c (vendor/oplus/kernel_4.19/audio/driver) has two
+          # printk format bugs. Its Kbuild compiles with -Werror, so both are hard errors
+          # in a kernel build (-Wformat / -Wformat-extra-args):
+          #   1) pr_warn("%s: Invalid number of codecs, ret=%d\n",
+          #              __func__, dev->of_node->full_name, ret);
+          #      -> three arguments for two conversions; "%d" is fed the node name string.
+          #      The node name is clearly meant to be logged, so add a "%s" for it.
+          #   2) pr_info("%s: i2s_id=%d, size=%d!\n", __func__, i2s_id, size);
+          #      -> "size" is a size_t, so "%d" -> "%zu".
+          SRC="kernel/msm-4.19/techpack/audio-extend/audio_extend_drv.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q 'Invalid number of codecs, ret=%d' "$SRC"; then
+              sed -i 's/Invalid number of codecs, ret=%d/Invalid number of codecs in %s, ret=%d/' "$SRC"
+              echo "[+] audio_extend_drv.c: pr_warn format now consumes the node name argument."
+            elif grep -q 'Invalid number of codecs in %s, ret=%d' "$SRC"; then
+              echo "[+] audio_extend_drv.c: pr_warn already patched, skipping."
+            else
+              echo "[-] audio_extend_drv.c: 'Invalid number of codecs' message not found in expected form."
+              false
+            fi
+
+            if grep -q 'i2s_id=%d, size=%d!' "$SRC"; then
+              sed -i 's/i2s_id=%d, size=%d!/i2s_id=%d, size=%zu!/' "$SRC"
+              echo "[+] audio_extend_drv.c: size_t argument now printed with %zu."
+            elif grep -q 'i2s_id=%d, size=%zu!' "$SRC"; then
+              echo "[+] audio_extend_drv.c: pr_info already patched, skipping."
+            else
+              echo "[-] audio_extend_drv.c: i2s_id/size message not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — did the audio merge step run before this one?"
+            false
+          fi
+
+      - name: "🩹 [AUDIO-2] tfa98xx_v6.c: variable length array"
+        if: env.MERGE_AUDIO == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # OnePlus's kernel_debug_read() (asoc/codecs/tfa98xx-v6/tfa98xx_v6.c) sizes a stack
+          # buffer with a "const int size = 1024;" variable:
+          #   char buffer[size];
+          # In C a const int is not a constant expression, so this is a variable length array:
+          #   error: variable length arrays are a C99 feature [-Werror,-Wvla-extension]
+          # (tfa98xx-v6/Kbuild compiles with -Werror, and the kernel builds as gnu89).
+          # ppajda / XTD carry this as "char buffer[1024];". "size" stays defined and is still
+          # used by the scnprintf() calls below it.
+          SRC="kernel/msm-4.19/techpack/audio/asoc/codecs/tfa98xx-v6/tfa98xx_v6.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q '^[[:space:]]*char buffer\[size\];' "$SRC"; then
+              sed -i 's/^\([[:space:]]*\)char buffer\[size\];/\1char buffer[1024];/' "$SRC"
+              echo "[+] tfa98xx_v6.c: char buffer[size] -> char buffer[1024]."
+            elif grep -q '^[[:space:]]*char buffer\[1024\];' "$SRC"; then
+              echo "[+] tfa98xx_v6.c: already patched, skipping."
+            else
+              echo "[-] tfa98xx_v6.c: 'char buffer[size];' not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — did the audio merge step run before this one?"
+            false
+          fi
+
+      - name: "🩹 [AUDIO-3] tfa98xx-v6: ftm_mode duplicate symbol"
+        if: env.MERGE_AUDIO == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # tfa98xx_v6.c defines a global "int ftm_mode" that tfa_dsp_v6.c reads through
+          # "extern int ftm_mode". wil6210 (drivers/net/wireless/ath/wil6210/pcie_bus.c) defines
+          # a global "bool ftm_mode" too. Built as modules the two never met; in this monolithic
+          # kernel both land in vmlinux and the link fails:
+          #   tfa98xx_v6.o: multiple definition of `ftm_mode'
+          #   drivers/net/wireless/ath/wil6210/pcie_bus.o: first defined here
+          # Meteoric renames the tfa symbol to tfa_ftm_mode in both files (keeps the value shared
+          # between them, unlike a per-file static). Do the same.
+          DIR="kernel/msm-4.19/techpack/audio/asoc/codecs/tfa98xx-v6"
+
+          if [ -d "$DIR" ]; then
+            for f in tfa98xx_v6.c tfa_dsp_v6.c; do
+              if grep -qE '(^|[^A-Za-z0-9_])ftm_mode([^A-Za-z0-9_]|$)' "$DIR/$f"; then
+                sed -i -E 's/\bftm_mode\b/tfa_ftm_mode/g' "$DIR/$f"
+                echo "[+] $f: ftm_mode -> tfa_ftm_mode."
+              elif grep -q 'tfa_ftm_mode' "$DIR/$f"; then
+                echo "[+] $f: already renamed, skipping."
+              else
+                echo "[-] $f: no ftm_mode found."
+                false
+              fi
+            done
+            if ! grep -q '^int tfa_ftm_mode = 0;' "$DIR/tfa98xx_v6.c" || ! grep -q '^extern int tfa_ftm_mode;' "$DIR/tfa_dsp_v6.c"; then
+              echo "[-] tfa_ftm_mode definition/extern pair not as expected after rename."
+              false
+            fi
+          else
+            echo "[-] $DIR not found — did the audio merge step run before this one?"
+            false
+          fi
+
+      - name: "🩹 [AUDIO-4] q6afe.c: smartpa_pm functions not static"
+        if: env.MERGE_AUDIO == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # OnePlus's dsp/q6afe.c defines set_smartpa_pm_status_apr() and
+          # get_smartpa_pm_result_apr() as "static int" followed by EXPORT_SYMBOL(). They are
+          # called from a different file (asoc/codecs/smartpa_pm/smartpa_pm.c, via extern
+          # declarations). With CONFIG_MODULES disabled EXPORT_SYMBOL() expands to nothing,
+          # so two things break:
+          #   q6afe.c: error: unused function 'set_smartpa_pm_status_apr' [-Werror,-Wunused-function]
+          #   link:    smartpa_pm.o -> undefined reference (the symbols are file-local)
+          # ppajda / XTD define both as plain "int" (non-static). Do the same.
+          SRC="kernel/msm-4.19/techpack/audio/dsp/q6afe.c"
+
+          if [ -f "$SRC" ]; then
+            for fn in set_smartpa_pm_status_apr get_smartpa_pm_result_apr; do
+              if grep -q "^static int $fn(void \*buf, int cmd_size)" "$SRC"; then
+                sed -i "s/^static int $fn(void \*buf, int cmd_size)/int $fn(void *buf, int cmd_size)/" "$SRC"
+                echo "[+] q6afe.c: $fn is no longer static."
+              elif grep -q "^int $fn(void \*buf, int cmd_size)" "$SRC"; then
+                echo "[+] q6afe.c: $fn already non-static, skipping."
+              else
+                echo "[-] q6afe.c: definition of $fn not found in expected form."
+                false
+              fi
+            done
+          else
+            echo "[-] $SRC not found — did the audio merge step run before this one?"
+            false
+          fi
+
+      # ---- MODPOST-1..2  oplus vendor sources ----
+      - name: "🩹 [MODPOST-1] oplus_project.c: section mismatch"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # update_manifest()/update_telephony_manifest() (vendor/oplus/kernel/system/
+          # oplus_project/qcom/oplus_project.c) dereference boot_command_line, which is
+          # __initdata. Their only caller, oplus_project_init(), is already __init
+          # (arch_initcall) and runs exactly once at boot before init memory is freed,
+          # so this is not a live bug — but modpost can't prove that statically because
+          # the two helpers themselves aren't marked __init, which is what
+          # CONFIG_DEBUG_SECTION_MISMATCH=y's full analysis flags:
+          #   WARNING: vmlinux.o(.text+...): Section mismatch in reference from the
+          #   function update_manifest() to the variable .init.data:boot_command_line
+          # Standard fix: mark both helpers __init too, matching their caller — this
+          # also lets their code be freed after boot like the rest of __init text,
+          # instead of staying resident forever.
+          SRC="vendor/oplus/kernel/system/oplus_project/qcom/oplus_project.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q "^static void update_manifest(struct proc_dir_entry \*parent)$" "$SRC"; then
+              sed -i \
+                -e 's/^static void update_manifest(struct proc_dir_entry \*parent)$/static void __init update_manifest(struct proc_dir_entry *parent)/' \
+                -e 's/^static void update_telephony_manifest(struct proc_dir_entry \*parent)$/static void __init update_telephony_manifest(struct proc_dir_entry *parent)/' \
+                "$SRC"
+              echo "[+] oplus_project.c: update_manifest()/update_telephony_manifest() marked __init."
+            elif grep -q "^static void __init update_manifest(struct proc_dir_entry \*parent)$" "$SRC"; then
+              echo "[+] oplus_project.c: already patched, skipping."
+            else
+              echo "[-] oplus_project.c: update_manifest() not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — was the OOS vendor/devicetree tree fetched before this step?"
+            false
+          fi
+
+      - name: "🩹 [MODPOST-2] phoenix_reboot_speed.c: section mismatch"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # tp_initcall_start_cb()/tp_initcall_finish_cb() are marked __init_or_module.
+          # That expands to nothing when built as a module, but to __init when built-in
+          # (our CONFIG_MODULES=n monolithic build), so they land in .init.text — yet the
+          # persistent `interests[]` table (plain .data) points at them, and tp_deinit()
+          # reads that table later from userspace (write to /proc/bootprof), i.e. after
+          # init memory is freed:
+          #   WARNING: vmlinux.o(.data+...): Section mismatch in reference from the
+          #   variable interests to the function .init.text:tp_initcall_start_cb()
+          # Marking `interests` __initdata instead would be wrong (tp_deinit needs it
+          # after boot), so drop __init_or_module from the two callbacks: they stay
+          # resident (small) and the probe table never points into freed memory.
+          SRC="vendor/oplus/kernel/system/oplus_phoenix/phoenix_reboot_speed.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q "^static __init_or_module void$" "$SRC"; then
+              sed -i 's/^static __init_or_module void$/static void/' "$SRC"
+              echo "[+] phoenix_reboot_speed.c: tp_initcall_*_cb no longer __init_or_module."
+            elif ! grep -q "__init_or_module" "$SRC"; then
+              echo "[+] phoenix_reboot_speed.c: already patched, skipping."
+            else
+              echo "[-] phoenix_reboot_speed.c: __init_or_module found in unexpected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found — was the OOS vendor/devicetree tree fetched before this step?"
+            false
+          fi
+
+      # ---- TREE-1..2  kernel tree Kconfig / Makefile ----
+      - name: "🩹 [TREE-1] Kconfig files: CRLF -> LF"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # Some OnePlus Kconfig files (e.g. mm/damon, cpu_jankinfo, aw8697_haptic,
+          # cmdline_parser, oplus_saupwk) are committed with Windows CRLF line endings.
+          # Kconfig treats the trailing \r as a stray character and prints an
+          # "ignoring unsupported character" warning for every line. The parse result is
+          # unaffected, but it floods the log. Convert to LF. Runs after the layout check
+          # step, so files reached through the vendor symlinks are converted in place
+          # (--follow-symlinks keeps the symlinks intact). Kconfig only: CRLF Makefiles
+          # are handled correctly by GNU make.
+          COUNT=0
+          while IFS= read -r -d '' f; do
+            if grep -qP '\r$' "$f"; then
+              sed -i --follow-symlinks 's/\r$//' "$f"
+              echo "[+] CRLF -> LF: $f"
+              COUNT=$((COUNT + 1))
+            fi
+          done < <(find -L . -type f -name 'Kconfig*' -print0)
+          echo "[+] Converted $COUNT Kconfig file(s) to LF."
+
+      - name: "🩹 [TREE-2] last_boot_reason: force built-in"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # drivers/soc/oplus/system/last_boot_reason/Makefile (reached through the
+          # drivers/soc/oplus/system -> vendor/oplus/kernel/system symlink checked by
+          # the layout step) hardcodes "obj-m += last_boot_reason.o" directly — unlike every
+          # other driver here, this isn't obj-$(CONFIG_X), so its parent Kconfig
+          # symbol (CONFIG_OPLUS_FEATURE_LAST_BOOT_REASON, default y) never mattered:
+          # it always builds as last_boot_reason.ko no matter what the defconfig says.
+          # Force it built-in to match XTD's fully monolithic (zero .ko) build.
+          MK="drivers/soc/oplus/system/last_boot_reason/Makefile"
+
+          if [ -f "$MK" ]; then
+            if grep -q "^obj-m += last_boot_reason.o" "$MK"; then
+              sed -i 's/^obj-m += last_boot_reason.o/obj-y += last_boot_reason.o/' "$MK"
+              echo "[+] last_boot_reason: forced built-in (obj-m -> obj-y)."
+            elif grep -q "^obj-y += last_boot_reason.o" "$MK"; then
+              echo "[+] last_boot_reason: already built-in, skipping."
+            else
+              echo "[-] last_boot_reason: obj-m line not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $MK not found — was the vendor/devicetree layout set up first?"
+            false
+          fi
