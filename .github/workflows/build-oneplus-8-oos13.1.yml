@@ -620,6 +620,27 @@ jobs:
           done
           echo "[+] OOS vendor/devicetree layout ready."
 
+      - name: 🩹 Fix CRLF line endings in OnePlus Kconfig files
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # Some OnePlus Kconfig files (e.g. mm/damon, cpu_jankinfo, aw8697_haptic,
+          # cmdline_parser, oplus_saupwk) are committed with Windows CRLF line endings.
+          # Kconfig treats the trailing \r as a stray character and prints an
+          # "ignoring unsupported character" warning for every line. The parse result is
+          # unaffected, but it floods the log. Convert to LF. Runs after the vendor
+          # symlinks are verified above, so files reached through them are converted in
+          # place (--follow-symlinks keeps the symlinks intact). Kconfig only: CRLF
+          # Makefiles are handled correctly by GNU make.
+          COUNT=0
+          while IFS= read -r -d '' f; do
+            if grep -qP '\r$' "$f"; then
+              sed -i --follow-symlinks 's/\r$//' "$f"
+              echo "[+] CRLF -> LF: $f"
+              COUNT=$((COUNT + 1))
+            fi
+          done < <(find -L . -type f -name 'Kconfig*' -print0)
+          echo "[+] Converted $COUNT Kconfig file(s) to LF."
+
       - name: 🩹 Fix last_boot_reason hardcoded module (force built-in)
         run: |
           cd $GITHUB_WORKSPACE/kernel/msm-4.19
