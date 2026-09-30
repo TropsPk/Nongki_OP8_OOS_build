@@ -424,6 +424,41 @@ jobs:
             false
           fi
 
+      - name: 🩹 Fix tfa98xx-v6 ftm_mode (duplicate symbol with wil6210)
+        if: env.MERGE_AUDIO == 'true'
+        run: |
+          cd $GITHUB_WORKSPACE
+          # tfa98xx_v6.c defines a global "int ftm_mode" that tfa_dsp_v6.c reads through
+          # "extern int ftm_mode". wil6210 (drivers/net/wireless/ath/wil6210/pcie_bus.c) defines
+          # a global "bool ftm_mode" too. Built as modules the two never met; in this monolithic
+          # kernel both land in vmlinux and the link fails:
+          #   tfa98xx_v6.o: multiple definition of `ftm_mode'
+          #   drivers/net/wireless/ath/wil6210/pcie_bus.o: first defined here
+          # Meteoric renames the tfa symbol to tfa_ftm_mode in both files (keeps the value shared
+          # between them, unlike a per-file static). Do the same.
+          DIR="kernel/msm-4.19/techpack/audio/asoc/codecs/tfa98xx-v6"
+
+          if [ -d "$DIR" ]; then
+            for f in tfa98xx_v6.c tfa_dsp_v6.c; do
+              if grep -qE '(^|[^A-Za-z0-9_])ftm_mode([^A-Za-z0-9_]|$)' "$DIR/$f"; then
+                sed -i -E 's/\bftm_mode\b/tfa_ftm_mode/g' "$DIR/$f"
+                echo "[+] $f: ftm_mode -> tfa_ftm_mode."
+              elif grep -q 'tfa_ftm_mode' "$DIR/$f"; then
+                echo "[+] $f: already renamed, skipping."
+              else
+                echo "[-] $f: no ftm_mode found."
+                false
+              fi
+            done
+            if ! grep -q '^int tfa_ftm_mode = 0;' "$DIR/tfa98xx_v6.c" || ! grep -q '^extern int tfa_ftm_mode;' "$DIR/tfa_dsp_v6.c"; then
+              echo "[-] tfa_ftm_mode definition/extern pair not as expected after rename."
+              false
+            fi
+          else
+            echo "[-] $DIR not found — did the audio merge step run before this one?"
+            false
+          fi
+
       - name: 🩹 Fix q6afe.c (smartpa_pm functions must not be static)
         if: env.MERGE_AUDIO == 'true'
         run: |
