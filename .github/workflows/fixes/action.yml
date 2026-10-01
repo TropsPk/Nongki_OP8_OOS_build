@@ -5,8 +5,12 @@ description: 'Source-level fixes for the merged OOS kernel, WLAN, audio and vend
 # Every step is idempotent and fails the job if its anchor text is not found.
 
 # FIX INDEX - each step name starts with its ID, so grep the ID (e.g. WLAN-3) to jump to it.
-# Paths: WLAN / AUDIO / TREE are under kernel/msm-4.19; MODPOST paths are under the workspace root.
-# Gate: WLAN needs MERGE_WLAN, AUDIO needs MERGE_AUDIO, MODPOST / TREE always run.
+# Paths: WLAN / AUDIO / TREE / WARN are under kernel/msm-4.19 (WARN reaches vendor files through the
+# layout symlinks); MODPOST paths are under the workspace root.
+# Gate: WLAN needs MERGE_WLAN, AUDIO needs MERGE_AUDIO, MODPOST / TREE / WARN always run.
+# WARN steps clear compiler / Kconfig / dtc warnings (no build failure). Where a warning is only
+# silenced, not removed at the source, the entry says "silenced". Host-tool noise (extract-cert) is
+# silenced by HOSTCFLAGS in EXTRA_CMDS of the main workflow, because it is a make flag, not a source edit.
 #
 # WLAN-1    drivers/staging/qcacld-3.0/core/mac/src/include/parser_api.h
 #           populate_mdie() array bound differs from its definition (clang -Werror) -> header bound = SIR_MDIE_SIZE
@@ -36,6 +40,26 @@ description: 'Source-level fixes for the merged OOS kernel, WLAN, audio and vend
 #           CRLF line endings flood the log with "unsupported character" -> convert to LF
 # TREE-2    drivers/soc/oplus/system/last_boot_reason/Makefile
 #           hardcoded obj-m always builds a .ko in a monolithic build -> obj-y (built in)
+# WARN-1    drivers/usb/gadget/function/f_accessory.c
+#           signed 1-bit fields read back as -1 (-Wsingle-bit-bitfield-constant-conversion) -> unsigned int online:1 / disconnected:1
+# WARN-2    drivers/hwtracing/coresight/coresight-tmc.c
+#           sscanf "%10s" can write 11 bytes into char str[10] (-Wfortify-source) -> "%9s"
+# WARN-3    drivers/platform/msm/ipa/ipa_v3/rmnet_ipa.c
+#           QMI enums assigned to IPA enums (-Wenum-conversion, values identical) -> explicit casts
+# WARN-4    drivers/power/oplus/v1/op_wlchg/bq2597x_charger.c
+#           4 static helpers only used by EXPORT_SYMBOL, which is empty without modules (-Wunused-function) -> __maybe_unused (silenced)
+# WARN-5    drivers/thermal/tsens-mtc.c
+#           static helper only used by EXPORT_SYMBOL (-Wunused-function) -> __maybe_unused (silenced)
+# WARN-6    drivers/soc/oplus/system/theia/powerkey_monitor.c
+#           "static const int" is not a constant, so char buf[size] is a VLA (-Wvla-extension) -> enum constants
+# WARN-7    block/Makefile
+#           request->csd is 8-byte aligned, smp_call_function_single_async() wants 32 (-Walign-mismatch) -> -Wno-align-mismatch for blk-mq.o (silenced)
+# WARN-8    drivers/power/Kconfig
+#           six OPLUS_* symbols are tristate here and bool in the charger Kconfig ("ignoring type redefinition") -> bool
+# WARN-9    scripts/Makefile.lib
+#           1357 dtc style warnings from stock device trees (reg_format, avoid_default_addr_size, ...) -> add to the -Wno- list (silenced)
+# WARN-10   arch/arm64/configs/vendor/kona-perf_defconfig
+#           20 symbols assigned twice ("override: reassigning to symbol") -> keep only the last assignment
 
 runs:
   using: 'composite'
@@ -554,5 +578,312 @@ runs:
             fi
           else
             echo "[-] $MK not found — was the vendor/devicetree layout set up first?"
+            false
+          fi
+
+      # ---- WARN-1..10  build warning cleanup (kernel tree) ----
+      - name: "🩹 [WARN-1] f_accessory.c: signed 1-bit fields"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # struct acc_dev declares "int online:1;" and "int disconnected:1;". A signed 1-bit
+          # field can only hold 0 and -1, so "dev->online = 1" reads back as -1 and clang warns:
+          #   warning: implicit truncation from 'int' to a one-bit wide bit-field changes value
+          #   from 1 to -1 [-Wsingle-bit-bitfield-constant-conversion]   (3 sites)
+          # Make both fields unsigned. Size and layout stay the same and every user only tests
+          # them for zero / non-zero.
+          SRC="drivers/usb/gadget/function/f_accessory.c"
+
+          if [ -f "$SRC" ]; then
+            for field in online disconnected; do
+              if grep -qE "^[[:space:]]*int $field:1;" "$SRC"; then
+                sed -i -E "s/^([[:space:]]*)int $field:1;/\1unsigned int $field:1;/" "$SRC"
+                echo "[+] f_accessory.c: $field is now an unsigned bit-field."
+              elif grep -qE "^[[:space:]]*unsigned int $field:1;" "$SRC"; then
+                echo "[+] f_accessory.c: $field already unsigned, skipping."
+              else
+                echo "[-] f_accessory.c: '$field:1' bit-field not found in expected form."
+                false
+              fi
+            done
+          else
+            echo "[-] $SRC not found."
+            false
+          fi
+
+      - name: "🩹 [WARN-2] coresight-tmc.c: sscanf field width"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # The buffer-size store handler parses its input with
+          #   sscanf(buf, "%10s", str)      into   char str[10]
+          # "%10s" stores up to 10 characters plus the terminating NUL = 11 bytes, one past the
+          # buffer (-Wfortify-source). The strlen(buf) >= 10 check just above already limits the
+          # input to 9 characters, so "%9s" is behaviour-identical and in bounds.
+          SRC="drivers/hwtracing/coresight/coresight-tmc.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -qF 'sscanf(buf, "%10s", str)' "$SRC"; then
+              sed -i 's/sscanf(buf, "%10s", str)/sscanf(buf, "%9s", str)/' "$SRC"
+              echo "[+] coresight-tmc.c: sscanf width 10 -> 9."
+            elif grep -qF 'sscanf(buf, "%9s", str)' "$SRC"; then
+              echo "[+] coresight-tmc.c: already patched, skipping."
+            else
+              echo "[-] coresight-tmc.c: sscanf(buf, \"%10s\", str) not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found."
+            false
+          fi
+
+      - name: "🩹 [WARN-3] rmnet_ipa.c: QMI -> IPA enum casts"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # The UL filter-rule setup assigns QMI v01 enum values straight to IPA uapi enums:
+          #   q6_ul_flt_rule_ptr->ip     = flt_spec_ptr->ip_type;
+          #   q6_ul_flt_rule_ptr->action = flt_spec_ptr->filter_action;
+          #   warning: implicit conversion from enumeration type ... [-Wenum-conversion]  (2 sites)
+          # The numeric values are identical on both sides, so only the type changes: say so
+          # with an explicit cast.
+          SRC="drivers/platform/msm/ipa/ipa_v3/rmnet_ipa.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -qF 'q6_ul_flt_rule_ptr->ip = flt_spec_ptr->ip_type;' "$SRC"; then
+              sed -i 's/\(q6_ul_flt_rule_ptr->ip = \)\(flt_spec_ptr->ip_type;\)/\1(enum ipa_ip_type)\2/' "$SRC"
+              echo "[+] rmnet_ipa.c: ip_type cast added."
+            elif grep -qF '(enum ipa_ip_type)flt_spec_ptr->ip_type;' "$SRC"; then
+              echo "[+] rmnet_ipa.c: ip_type cast already present, skipping."
+            else
+              echo "[-] rmnet_ipa.c: 'q6_ul_flt_rule_ptr->ip = ...' not found in expected form."
+              false
+            fi
+
+            if grep -qF 'q6_ul_flt_rule_ptr->action = flt_spec_ptr->filter_action;' "$SRC"; then
+              sed -i 's/\(q6_ul_flt_rule_ptr->action = \)\(flt_spec_ptr->filter_action;\)/\1(enum ipa_flt_action)\2/' "$SRC"
+              echo "[+] rmnet_ipa.c: filter_action cast added."
+            elif grep -qF '(enum ipa_flt_action)flt_spec_ptr->filter_action;' "$SRC"; then
+              echo "[+] rmnet_ipa.c: filter_action cast already present, skipping."
+            else
+              echo "[-] rmnet_ipa.c: 'q6_ul_flt_rule_ptr->action = ...' not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found."
+            false
+          fi
+
+      - name: "🩹 [WARN-4] bq2597x_charger.c: unused static helpers"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # Four helpers in the wireless-charge pump driver are "static int" and are only
+          # referenced by EXPORT_SYMBOL_GPL(). With CONFIG_MODULES disabled EXPORT_SYMBOL*
+          # expands to nothing, so nothing uses them:
+          #   warning: unused function 'bq2597x_wl_set_wdt' [-Wunused-function]   (4 functions)
+          # They are OnePlus API helpers, so keep them and mark them __maybe_unused. This only
+          # silences the warning; it does not remove the dead code.
+          # Reached through drivers/power/oplus -> vendor/oplus/kernel/charger (layout symlink),
+          # and v1/op_wlchg -> ../op_wlchg inside it.
+          SRC="drivers/power/oplus/v1/op_wlchg/bq2597x_charger.c"
+
+          if [ -f "$SRC" ]; then
+            for fn in bq2597x_wl_set_wdt bq2597x_wl_clear_alarm_int_mask bq2597x_wl_set_fault_int_mask bq2597x_wl_clear_fault_int_mask; do
+              if grep -q "^static int $fn(" "$SRC"; then
+                sed -i --follow-symlinks "s/^static int $fn(/static int __maybe_unused $fn(/" "$SRC"
+                echo "[+] bq2597x_charger.c: $fn marked __maybe_unused."
+              elif grep -q "^static int __maybe_unused $fn(" "$SRC"; then
+                echo "[+] bq2597x_charger.c: $fn already marked, skipping."
+              else
+                echo "[-] bq2597x_charger.c: 'static int $fn(' not found in expected form."
+                false
+              fi
+            done
+          else
+            echo "[-] $SRC not found — was the vendor/devicetree layout set up first?"
+            false
+          fi
+
+      - name: "🩹 [WARN-5] tsens-mtc.c: unused static helper"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # tsens_mtc_reset_history_counter() is "static int" and is only referenced by
+          # EXPORT_SYMBOL(), which expands to nothing without CONFIG_MODULES:
+          #   warning: unused function 'tsens_mtc_reset_history_counter' [-Wunused-function]
+          # Same treatment as WARN-4: keep the function, mark it __maybe_unused (silences the
+          # warning only).
+          SRC="drivers/thermal/tsens-mtc.c"
+
+          if [ -f "$SRC" ]; then
+            if grep -q "^static int tsens_mtc_reset_history_counter(" "$SRC"; then
+              sed -i "s/^static int tsens_mtc_reset_history_counter(/static int __maybe_unused tsens_mtc_reset_history_counter(/" "$SRC"
+              echo "[+] tsens-mtc.c: tsens_mtc_reset_history_counter marked __maybe_unused."
+            elif grep -q "^static int __maybe_unused tsens_mtc_reset_history_counter(" "$SRC"; then
+              echo "[+] tsens-mtc.c: already marked, skipping."
+            else
+              echo "[-] tsens-mtc.c: 'static int tsens_mtc_reset_history_counter(' not found in expected form."
+              false
+            fi
+          else
+            echo "[-] $SRC not found."
+            false
+          fi
+
+      - name: "🩹 [WARN-6] powerkey_monitor.c: variable length arrays"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # powerkey_monitor.c sizes two stack buffers with file-scope constants:
+          #   static const int flow_size = 16;
+          #   static const int stage_brief_size = 64;
+          #   static const int stage_total_size = stage_brief_size*flow_size;
+          #   char stages[stage_total_size]; char buffer[stage_brief_size];
+          # In C a "static const int" is not a constant expression, so those are variable length
+          # arrays (-Wvla-extension, 2 sites; the kernel builds as gnu89). Enum constants are real
+          # constant expressions with the same values. This file has CRLF line endings, so the
+          # sed keeps a trailing \r.
+          SRC="drivers/soc/oplus/system/theia/powerkey_monitor.c"
+
+          if [ -f "$SRC" ]; then
+            for c in flow_size stage_brief_size stage_total_size; do
+              if grep -qE "^static const int $c = " "$SRC"; then
+                sed -i --follow-symlinks -E "s/^static const int $c = (.*);(\r?)$/enum { $c = \1 };\2/" "$SRC"
+                grep -qE "^enum \{ $c = " "$SRC" || { echo "[-] powerkey_monitor.c: $c did not convert."; false; }
+                echo "[+] powerkey_monitor.c: $c is now an enum constant."
+              elif grep -qE "^enum \{ $c = " "$SRC"; then
+                echo "[+] powerkey_monitor.c: $c already an enum constant, skipping."
+              else
+                echo "[-] powerkey_monitor.c: '$c' constant not found in expected form."
+                false
+              fi
+            done
+          else
+            echo "[-] $SRC not found — was the vendor/devicetree layout set up first?"
+            false
+          fi
+
+      - name: "🩹 [WARN-7] block/Makefile: blk-mq.c csd alignment"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # struct request embeds a plain struct __call_single_data (8-byte aligned) but
+          # smp_call_function_single_async() takes the 32-byte aligned call_single_data_t:
+          #   warning: passing 8-byte aligned argument to 32-byte aligned parameter 2
+          #   [-Walign-mismatch]   (blk-mq.c)
+          # This is how the 4.19 sources are written and it is harmless on arm64 (the alignment
+          # is only a cache-line hint). Silence it for blk-mq.o only instead of changing the size
+          # and layout of struct request. The warning is silenced, not removed.
+          MK="block/Makefile"
+
+          if [ -f "$MK" ]; then
+            if grep -q 'CFLAGS_blk-mq.o' "$MK"; then
+              echo "[+] block/Makefile: already patched, skipping."
+            else
+              printf '\n# -Walign-mismatch: upstream request->csd alignment quirk, harmless on arm64\nCFLAGS_blk-mq.o += $(call cc-option,-Wno-align-mismatch)\n' >> "$MK"
+              grep -q 'CFLAGS_blk-mq.o' "$MK" || { echo "[-] block/Makefile: flag did not apply."; false; }
+              echo "[+] block/Makefile: -Wno-align-mismatch for blk-mq.o."
+            fi
+          else
+            echo "[-] $MK not found."
+            false
+          fi
+
+      - name: "🩹 [WARN-8] power Kconfig: duplicate OPLUS_* symbol types"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # Six charger symbols are declared twice: as tristate in drivers/power/Kconfig and
+          # again as bool in the OnePlus charger Kconfig sourced later through drivers/power/oplus.
+          # Kconfig keeps the first (tristate) type and warns on every parse:
+          #   drivers/power/oplus/Kconfig:36:warning: ignoring type redefinition of
+          #   'OPLUS_SHIP_MODE_SUPPORT' from 'tristate' to 'bool'      (6 symbols)
+          # With CONFIG_MODULES disabled tristate behaves exactly like bool, so declare them bool
+          # here. The resolved .config is unchanged and the warnings are gone.
+          K="drivers/power/Kconfig"
+
+          if [ -f "$K" ]; then
+            for sym in OPLUS_SHORT_C_BATT_CHECK OPLUS_SHORT_IC_CHECK OPLUS_SHORT_HW_CHECK OPLUS_RTC_DET_SUPPORT OPLUS_CHECK_CHARGERID_VOLT OPLUS_SHIP_MODE_SUPPORT; do
+              if ! grep -q "^config $sym\$" "$K"; then
+                echo "[-] $K: config $sym not found."
+                false
+              fi
+              BLOCK="$(sed -n "/^config $sym\$/,/^config /p" "$K")"
+              if grep -q '^[[:space:]]*tristate ' <<< "$BLOCK"; then
+                sed -i "/^config $sym\$/,/^config /s/^\([[:space:]]*\)tristate /\1bool /" "$K"
+                BLOCK="$(sed -n "/^config $sym\$/,/^config /p" "$K")"
+                grep -q '^[[:space:]]*bool ' <<< "$BLOCK" || { echo "[-] $K: $sym was not converted."; false; }
+                echo "[+] Kconfig: $sym tristate -> bool."
+              else
+                echo "[+] Kconfig: $sym already bool, skipping."
+              fi
+            done
+          else
+            echo "[-] $K not found."
+            false
+          fi
+
+      - name: "🩹 [WARN-9] Makefile.lib: dtc style checks"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # The stock Qualcomm / OnePlus device trees trip five dtc lint checks that are false
+          # positives here (overlays are compiled without their parent node, so cell sizes and
+          # phandle targets are unknown): reg_format, avoid_default_addr_size, gpios_property,
+          # interrupts_property, pci_device_bus_num. That is 1357 warning lines per build, none
+          # of which changes the compiled blob. Add them to the kernel's own -Wno- list in
+          # DTC_FLAGS (next to avoid_unnecessary_addr_size). Unlike a blanket "-q" every other
+          # dtc warning and all errors stay visible. The warnings are silenced, not removed.
+          MK="scripts/Makefile.lib"
+
+          if [ -f "$MK" ]; then
+            if grep -q 'Wno-avoid_default_addr_size' "$MK"; then
+              echo "[+] Makefile.lib: dtc style checks already disabled, skipping."
+            elif grep -qE '^[[:space:]]-Wno-pci_device_reg$' "$MK"; then
+              sed -i 's/^\t-Wno-pci_device_reg$/\t-Wno-pci_device_reg \\\n\t-Wno-pci_device_bus_num \\\n\t-Wno-avoid_default_addr_size \\\n\t-Wno-reg_format \\\n\t-Wno-gpios_property \\\n\t-Wno-interrupts_property/' "$MK"
+              grep -q 'Wno-interrupts_property' "$MK" || { echo "[-] Makefile.lib: dtc flags did not apply."; false; }
+              echo "[+] Makefile.lib: five dtc style checks disabled."
+            else
+              echo "[-] Makefile.lib: '-Wno-pci_device_reg' anchor not found."
+              false
+            fi
+          else
+            echo "[-] $MK not found."
+            false
+          fi
+
+      - name: "🩹 [WARN-10] kona-perf_defconfig: duplicate assignments"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # kona-perf_defconfig assigns 20 symbols twice (joystick / xpad, PlayStation / Sony
+          # force feedback, SLUB_DEBUG, the NET_SCH / NET_CLS / NET_EMATCH / NET_ACT block,
+          # NET_SCH_PRIO):
+          #   warning: override: reassigning to symbol NET_SCH_PRIO
+          # Kconfig applies the last assignment, so keep only the last one per symbol. The
+          # resulting .config is unchanged (19 pairs are identical; SLUB_DEBUG was "is not set"
+          # early and =y later, and =y is what already won).
+          # This runs before "Apply OOS defconfig fragment". The patch still applies cleanly
+          # on the deduplicated file (one hunk shifts by one line) and gives the same final
+          # defconfig as deduplicating afterwards.
+          D="arch/arm64/configs/vendor/kona-perf_defconfig"
+
+          if [ -f "$D" ]; then
+            awk '
+              function sym(l,  m) {
+                if (match(l, /^CONFIG_[A-Za-z0-9_]+=/)) return substr(l, 8, RLENGTH - 8)
+                if (match(l, /^# CONFIG_[A-Za-z0-9_]+ is not set/)) { m = substr(l, 10); sub(/ is not set.*/, "", m); return m }
+                return ""
+              }
+              NR == FNR { s = sym($0); if (s != "") last[s] = FNR; next }
+              { s = sym($0); if (s == "" || last[s] == FNR) print; else print s > "/dev/stderr" }
+            ' "$D" "$D" > "$D.dedup" 2> "$D.dropped"
+            echo "[+] $D: dropped $(wc -l < "$D.dropped") superseded duplicate line(s)."
+            sort -u "$D.dropped" | sed 's/^/    /'
+            mv "$D.dedup" "$D"
+            rm -f "$D.dropped"
+          else
+            echo "[-] $D not found."
             false
           fi

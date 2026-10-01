@@ -15,7 +15,8 @@ env:
   CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-android-"
   # OOS 4.19.157 old codebase + clang 19: disable clang's newer default -Werror strict warnings
   # KCFLAGS value must be quoted (it contains spaces), otherwise make only takes the first argument
-  EXTRA_CMDS : 'KCFLAGS="-Wno-strict-prototypes -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-implicit-function-declaration -Wno-unused-but-set-variable"'
+  # HOSTCFLAGS: OpenSSL 3 deprecation noise from host tools (scripts/extract-cert.c); host-only, not kernel code
+  EXTRA_CMDS : 'KCFLAGS="-Wno-strict-prototypes -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-implicit-function-declaration -Wno-unused-but-set-variable" HOSTCFLAGS="-Wno-deprecated-declarations"'
 
   # OOS official kernel (OnePlus OSS, 4.19.157) - device tree lives in a separate repo
   KERNEL_SOURCE : "https://github.com/OnePlusOSS/android_kernel_oneplus_sm8250.git"
