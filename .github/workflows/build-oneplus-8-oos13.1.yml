@@ -13,7 +13,7 @@ env:
 
   # OEM kernel_definitions.mk: real_cc := REAL_CC=... CLANG_TRIPLE=aarch64-linux-gnu-
   CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-android-"
-  # OOS 4.19.157 old codebase + clang 18: disable clang's newer default -Werror strict warnings
+  # OOS 4.19.157 old codebase + clang 19: disable clang's newer default -Werror strict warnings
   # KCFLAGS value must be quoted (it contains spaces), otherwise make only takes the first argument
   # HOSTCFLAGS: OpenSSL 3 deprecation noise from host tools (scripts/extract-cert.c); host-only, not kernel code
   EXTRA_CMDS : 'KCFLAGS="-Wno-strict-prototypes -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-implicit-function-declaration -Wno-unused-but-set-variable" HOSTCFLAGS="-Wno-deprecated-declarations"'
@@ -28,7 +28,7 @@ env:
   VENDOR_SOURCE : "https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8250.git"
   VENDOR_BRANCH : "oneplus/sm8250_t_13.1_op8"
 
-  CLANG_SOURCE : "https://github.com/llvm/llvm-project/releases/download/llvmorg-18.1.8/clang+llvm-18.1.8-x86_64-linux-gnu-ubuntu-18.04.tar.xz"
+  CLANG_SOURCE : "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz"
   CLANG_BRANCH : ""
 
   GCC_GNU : false
@@ -114,7 +114,7 @@ env:
 jobs:
   build-kernel:
     name: Oneplus 8 (OxygenOS 13.1 A13) (Stock Kernel)
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       CCACHE_COMPILERCHECK: "%compiler% -dumpmachine; %compiler% -dumpversion"
       CCACHE_NOHASHDIR: "true"
