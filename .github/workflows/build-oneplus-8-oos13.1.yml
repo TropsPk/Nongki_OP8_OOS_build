@@ -12,7 +12,7 @@ env:
   BRAND_SHOW_FLAG : "oneplus"
 
   # OEM kernel_definitions.mk: real_cc := REAL_CC=... CLANG_TRIPLE=aarch64-linux-gnu-
-  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-android-"
+  CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-gnu-"
   # OOS 4.19.157 old codebase + clang 18: disable clang's newer default -Werror strict warnings
   # KCFLAGS value must be quoted (it contains spaces), otherwise make only takes the first argument
   # HOSTCFLAGS: OpenSSL 3 deprecation noise from host tools (scripts/extract-cert.c); host-only, not kernel code
