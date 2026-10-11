@@ -5,9 +5,9 @@ description: 'Source-level fixes for the merged OOS kernel, WLAN, audio and vend
 # Every step is idempotent and fails the job if its anchor text is not found.
 
 # FIX INDEX - each step name starts with its ID, so grep the ID (e.g. WLAN-3) to jump to it.
-# Paths: WLAN / AUDIO / TREE / WARN are under kernel/msm-4.19 (WARN reaches vendor files through the
+# Paths: WLAN / AUDIO / TREE / MONO / WARN are under kernel/msm-4.19 (WARN reaches vendor files through the
 # layout symlinks); MODPOST paths are under the workspace root.
-# Gate: WLAN needs MERGE_WLAN, AUDIO needs MERGE_AUDIO, MODPOST / TREE / WARN always run.
+# Gate: WLAN and MONO-2 need MERGE_WLAN, AUDIO needs MERGE_AUDIO, MODPOST / TREE / MONO-1 / MONO-3 / WARN always run.
 # WARN steps clear compiler / Kconfig / dtc warnings (no build failure). Where a warning is only
 # silenced, not removed at the source, the entry says "silenced". Host-tool noise (extract-cert) is
 # silenced by HOSTCFLAGS in EXTRA_CMDS of the main workflow, because it is a make flag, not a source edit.
@@ -40,6 +40,12 @@ description: 'Source-level fixes for the merged OOS kernel, WLAN, audio and vend
 #           CRLF line endings flood the log with "unsupported character" -> convert to LF
 # TREE-2    drivers/soc/oplus/system/last_boot_reason/Makefile
 #           hardcoded obj-m always builds a .ko in a monolithic build -> obj-y (built in)
+# MONO-1    net/Kconfig, kernel/bpf/core.c
+#           BPF_JIT depends on MODULES and the JIT allocates with module_alloc() -> drop the dependency, vmalloc_exec()/vfree() without modules
+# MONO-2    drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_main.c
+#           built-in qcacld only creates the boot_wlan sysfs and never starts WLAN by itself -> use the module-style init/exit
+# MONO-3    drivers/net/wireless/cnss2/pci.c
+#           OPLUS msleep(1000) before registering the WLAN driver -> removed
 # WARN-1    drivers/usb/gadget/function/f_accessory.c
 #           signed 1-bit fields read back as -1 (-Wsingle-bit-bitfield-constant-conversion) -> unsigned int online:1 / disconnected:1
 # WARN-2    drivers/hwtracing/coresight/coresight-tmc.c
@@ -578,6 +584,142 @@ runs:
             fi
           else
             echo "[-] $MK not found — was the vendor/devicetree layout set up first?"
+            false
+          fi
+
+      # ---- MONO-1..3  runtime fixes for the monolithic (CONFIG_MODULES off) kernel, ported from HELLBOY017 13.1-minimal ----
+      - name: "🩹 [MONO-1] BPF JIT without CONFIG_MODULES"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # Stock boot.img has CONFIG_BPF_JIT=y and CONFIG_BPF_JIT_ALWAYS_ON=y, but net/Kconfig
+          # declares "depends on MODULES" on BPF_JIT, so with CONFIG_MODULES disabled both symbols
+          # silently drop out of the resolved .config. kernel/bpf/core.c also allocates JIT images
+          # with module_alloc(), which arm64 only builds with CONFIG_MODULES. HELLBOY017's 13.1
+          # kernel (commit e6fd027f50d5, after kdrag0n's vmalloc change) drops the Kconfig
+          # dependency and uses vmalloc_exec() / vfree() when CONFIG_MODULES is off.
+          python3 - <<'PY'
+          import sys
+
+          def edit(path, pairs):
+              try:
+                  s = open(path).read()
+              except OSError:
+                  print("[-] %s not found." % path)
+                  sys.exit(1)
+              changed = False
+              for old, new, label in pairs:
+                  if new in s:
+                      print("[+] %s: %s already applied, skipping." % (path, label))
+                  elif s.count(old) == 1:
+                      s = s.replace(old, new)
+                      changed = True
+                      print("[+] %s: %s." % (path, label))
+                  else:
+                      print("[-] %s: %s anchor not found in expected form." % (path, label))
+                      sys.exit(1)
+              if changed:
+                  open(path, "w").write(s)
+
+          head = 'config BPF_JIT\n\tbool "enable BPF Just In Time compiler"\n\tdepends on HAVE_CBPF_JIT || HAVE_EBPF_JIT\n'
+          edit("net/Kconfig", [
+              (head + "\tdepends on MODULES\n\t---help---\n",
+               head + "\t---help---\n",
+               "BPF_JIT no longer depends on MODULES"),
+          ])
+
+          alloc = "\thdr = module_alloc(size);\n"
+          free = "\tmodule_memfree(hdr);\n"
+          edit("kernel/bpf/core.c", [
+              (alloc,
+               "#ifdef CONFIG_MODULES\n" + alloc + "#else\n\thdr = vmalloc_exec(size);\n#endif\n",
+               "JIT image allocated with vmalloc_exec() without modules"),
+              (free,
+               "#ifdef CONFIG_MODULES\n" + free + "#else\n\tvfree(hdr);\n#endif\n",
+               "JIT image freed with vfree() without modules"),
+          ])
+          PY
+
+      - name: "🩹 [MONO-2] wlan_hdd_main.c: start WLAN at boot, no boot_wlan sysfs"
+        if: env.MERGE_WLAN == 'true'
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE
+          # qcacld-3.0 treats "not a module" (#ifndef MODULE) as a statically linked driver whose
+          # init only creates /sys/kernel/boot_wlan/boot_wlan; hdd_driver_load() then runs only
+          # when userspace writes to that file. The OOS ROM loads WLAN as a .ko and never writes
+          # it, so in our monolithic kernel WLAN would never start. HELLBOY017 (commit 31de9bb29d53)
+          # disables the sysfs code and always uses the module-style init/exit, so hdd_module_init()
+          # loads the driver directly from module_init() (device_initcall when built in).
+          SRC="kernel/msm-4.19/drivers/staging/qcacld-3.0/core/hdd/src/wlan_hdd_main.c"
+
+          if [ -f "$SRC" ]; then
+            python3 - "$SRC" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          note = " /* monolithic: no boot_wlan sysfs, WLAN starts from module_init() */"
+          pairs = [
+              ("static dev_t device;\n#ifndef MODULE\nstatic struct gwlan_loader *wlan_loader;\n",
+               "static dev_t device;\n#if 0" + note + "\nstatic struct gwlan_loader *wlan_loader;\n",
+               "boot_wlan declarations disabled"),
+              ("#ifndef MODULE\n/**\n * wlan_boot_cb() - Wlan boot callback\n",
+               "#if 0" + note + "\n/**\n * wlan_boot_cb() - Wlan boot callback\n",
+               "boot_wlan sysfs code disabled"),
+              ("#ifdef MODULE\n/**\n * hdd_module_init() - Module init helper\n",
+               "#if 1" + note + "\n/**\n * hdd_module_init() - Module init helper\n",
+               "module-style hdd_module_init() selected"),
+              ("#ifdef MODULE\n/**\n * hdd_module_exit() - Exit function\n",
+               "#if 1" + note + "\n/**\n * hdd_module_exit() - Exit function\n",
+               "module-style hdd_module_exit() selected"),
+          ]
+          changed = False
+          for old, new, label in pairs:
+              if new in s:
+                  print("[+] wlan_hdd_main.c: %s already applied, skipping." % label)
+              elif s.count(old) == 1:
+                  s = s.replace(old, new)
+                  changed = True
+                  print("[+] wlan_hdd_main.c: %s." % label)
+              else:
+                  print("[-] wlan_hdd_main.c: %s anchor not found in expected form." % label)
+                  sys.exit(1)
+          if changed:
+              open(p, "w").write(s)
+          PY
+          else
+            echo "[-] $SRC not found — was the WLAN driver merged before this step?"
+            false
+          fi
+
+      - name: "🩹 [MONO-3] cnss2: no 1 s delay before registering the WLAN driver"
+        shell: bash
+        run: |
+          cd $GITHUB_WORKSPACE/kernel/msm-4.19
+          # drivers/net/wireless/cnss2/pci.c: OPLUS added "u16 wlan_driver_delay_time = 1000" and an
+          # msleep() of that length in cnss_wlan_register_driver() before the WLAN driver is probed.
+          # HELLBOY017 (commit da76fa8636d2) reverts it. Only removes a fixed 1 s wait.
+          SRC="drivers/net/wireless/cnss2/pci.c"
+
+          if [ -f "$SRC" ]; then
+            python3 - "$SRC" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          decl = "\tu16 wlan_driver_delay_time = 1000;\n"
+          wait = ("\tcnss_pr_dbg(\"Delay %dms before probe WLAN driver\\n\", wlan_driver_delay_time);\n"
+                  "\tmsleep(wlan_driver_delay_time);\n")
+          if decl not in s and wait not in s:
+              print("[+] cnss2/pci.c: WLAN register delay already removed, skipping.")
+          elif s.count(decl) == 1 and s.count(wait) == 1:
+              open(p, "w").write(s.replace(decl, "").replace(wait, ""))
+              print("[+] cnss2/pci.c: WLAN register delay removed.")
+          else:
+              print("[-] cnss2/pci.c: delay lines not found in expected form.")
+              sys.exit(1)
+          PY
+          else
+            echo "[-] $SRC not found."
             false
           fi
 
