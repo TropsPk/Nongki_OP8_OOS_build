@@ -13,10 +13,12 @@ env:
 
   # OEM kernel_definitions.mk: real_cc := REAL_CC=... CLANG_TRIPLE=aarch64-linux-gnu-
   CUSTOM_CMDS : "CLANG_TRIPLE=aarch64-linux-android-"
-  # OOS 4.19.157 old codebase + clang 19: disable clang's newer default -Werror strict warnings
+  # OOS 4.19.157 old codebase: disable clang's newer default -Werror strict warnings
+  # -Wno-unknown-warning-option: the -Wno-* flags below that only exist in newer clang (e.g. -Wno-incompatible-function-pointer-types,
+  # -Wno-deprecated-non-prototype, -Wno-unused-but-set-variable) are unknown to the older clang; without this each file would warn about them
   # KCFLAGS value must be quoted (it contains spaces), otherwise make only takes the first argument
   # HOSTCFLAGS: OpenSSL 3 deprecation noise from host tools (scripts/extract-cert.c); host-only, not kernel code
-  EXTRA_CMDS : 'KCFLAGS="-Wno-strict-prototypes -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-implicit-function-declaration -Wno-unused-but-set-variable" HOSTCFLAGS="-Wno-deprecated-declarations"'
+  EXTRA_CMDS : 'KCFLAGS="-Wno-unknown-warning-option -Wno-strict-prototypes -Wno-incompatible-function-pointer-types -Wno-deprecated-non-prototype -Wno-implicit-int -Wno-int-to-pointer-cast -Wno-pointer-to-int-cast -Wno-implicit-function-declaration -Wno-unused-but-set-variable" HOSTCFLAGS="-Wno-deprecated-declarations"'
 
   # OOS official kernel (OnePlus OSS, 4.19.157) - device tree lives in a separate repo
   KERNEL_SOURCE : "https://github.com/OnePlusOSS/android_kernel_oneplus_sm8250.git"
@@ -28,7 +30,11 @@ env:
   VENDOR_SOURCE : "https://github.com/OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_sm8250.git"
   VENDOR_BRANCH : "oneplus/sm8250_t_13.1_op8"
 
-  CLANG_SOURCE : "https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz"
+  # Stock boot.img was built with "clang version 10.0.7 for Android NDK" (4.19.157). Use an older AOSP clang
+  # that is much closer to it than upstream LLVM 19. The .tar.gz branch of build-env extracts the AOSP
+  # +archive tarball (no top-level directory) straight into clang-custom/, so clang-custom/bin/clang is found.
+  # Previous value, to roll back: https://github.com/llvm/llvm-project/releases/download/llvmorg-19.1.7/LLVM-19.1.7-Linux-X64.tar.xz
+  CLANG_SOURCE : "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/android12-release/clang-r383902.tar.gz"
   CLANG_BRANCH : ""
 
   GCC_GNU : false
